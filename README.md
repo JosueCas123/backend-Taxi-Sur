@@ -75,14 +75,74 @@ Y tu `DATABASE_URL` quedaría: `postgresql://postgres:postgres@localhost:5432/ra
 
 ## 4. Schema y migración
 
-El schema completo (traducido de tu Diagrama E-R) ya está en `prisma/schema.prisma`. Incluye:
+El schema completo (traducido de tu Diagrama E-R) está en `prisma/schema.prisma`. Incluye:
 `configuracion`, `usuarios`, `conductores`, `vehiculos`, `pasajeros`, `ubicaciones_conductor`,
 `solicitudes`, `tarifas` — todas con `eliminado_en` para soft delete.
 
+**Prisma 7 (versión instalada: 7.10.0).** En esta versión la URL de conexión ya no va en el
+datasource del schema; vive en `prisma.config.ts` (que lee `DATABASE_URL` del `.env`).
+`prisma/schema.prisma` solo declara el proveedor `postgresql`.
+
+### Validar el schema
+
 ```bash
-npx prisma migrate dev --name init
+npx prisma validate
+```
+
+### Comprobaciones previas al despliegue
+
+Antes de aplicar migraciones a Supabase se verifica que el destino está vacío y no existe
+historial incompatible:
+
+- Node.js 20+ (probado con v24.20.0) y Prisma 7.10.0.
+- El proyecto de Supabase apunta a la base de desarrollo, con acceso de migración.
+- Sin tablas de aplicación en el esquema `public`, sin enumeraciones de negocio y sin
+  tablas `_prisma_migrations` previas.
+
+### Generar el SQL inicial (sin base sombra)
+
+```bash
+npx prisma migrate diff --from-empty --to-schema prisma/schema.prisma --script
+```
+
+Revisa el SQL generado y guárdalo como una migración versionada
+
+`prisma/migrations/<marca-temporal>_init/migration.sql` junto con
+`prisma/migrations/migration_lock.toml` (proveedor `postgresql`). La migración actual crea
+los ocho modelos y las cinco enumeraciones del schema, sin datos iniciales ni operaciones
+destructivas.
+
+### Aplicar la migración (Prisma Migrate deploy)
+
+```bash
+npx prisma migrate deploy
+```
+
+El comando aplica únicamente las migraciones pendientes que existan en `prisma/migrations/`.
+Es seguro repetirlo: si no hay pendientes no reaplica nada ni recrea tablas.
+
+### Verificar el estado del historial
+
+```bash
+npx prisma migrate status
+```
+
+Debe responder `Database schema is up to date!` y no mostrar migraciones pendientes.
+
+### Generar Prisma Client
+
+```bash
 npx prisma generate
 ```
+
+Con `prisma.config.ts` presente y el schema válido, genera el cliente en
+`node_modules/@prisma/client` sin necesidad de un módulo de conexión de la aplicación.
+
+> El flujo anterior se ejecutó contra la base de desarrollo: 8 tablas (`configuracion`,
+> `usuarios`, `conductores`, `vehiculos`, `pasajeros`, `ubicaciones_conductor`,
+> `solicitudes`, `tarifas`), 5 enumeraciones (`RolUsuario`, `EstadoConductor`,
+> `EstadoJornada`, `EstadoDisponibilidad`, `EstadoSolicitud`), las 8 tablas quedaron sin
+> registros y una segunda ejecución de `migrate deploy` finalizó sin introducir cambios.
 
 Verifica visualmente con:
 
@@ -95,7 +155,9 @@ npx prisma studio
 ```
 backend/
 ├── prisma/
-│   └── schema.prisma
+│   ├── schema.prisma
+│   ├── prisma.config.ts   # conexión (DATABASE_URL) y ruta del schema
+│   └── migrations/        # SQL versionado + migration_lock.toml
 ├── src/
 │   ├── modules/
 │   │   ├── auth/
@@ -211,6 +273,8 @@ a medida que avances.
     "build": "tsc",
     "start": "node dist/server.js",
     "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy",
+    "prisma:generate": "prisma generate",
     "prisma:studio": "prisma studio"
   }
 }
