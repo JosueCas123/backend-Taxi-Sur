@@ -24,7 +24,7 @@
     "spec-verify": {
       "mode": "subagent",
       "description": "Verifica los criterios de aceptación de un spec implementado, los corrige y marca los checks con evidencia.",
-      "model": "openrouter/qwen/qwen-3.6-plus",
+      "model": "qwen/qwen3-coder-plus",
       "temperature": 0.1,
       "permission": {
         "edit": "allow"

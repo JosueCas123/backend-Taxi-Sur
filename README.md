@@ -1,156 +1,181 @@
 # Backend — Radio Taxi MVP
 
-API REST en Node.js + Express + TypeScript + Prisma + PostgreSQL. Es la única fuente de
+API REST en Node.js + Express 5 + TypeScript + Prisma 7 + PostgreSQL. Es la única fuente de
 verdad del sistema: n8n (agente IA), la app del conductor y el dashboard admin consumen
 esta API. Ver reglas de negocio en [`../docs/REGLAS_DE_NEGOCIO.md`](../docs/REGLAS_DE_NEGOCIO.md)
-y el spec de cada módulo en [`../specs/backend/`](../specs/backend/) antes de implementarlo.
+y los specs de cada módulo en [`specs/`](specs/) antes de implementarlo.
 
 ## Requisitos previos
 
-- Node.js 20+ y npm
-- PostgreSQL 15+ (local con Docker, o un servicio gestionado como Railway, Supabase o Neon)
-- Git
+- Node.js 20+ (probado con v24.20.0) y npm.
+- PostgreSQL 15+ o un proyecto de Supabase.
+- Git.
 
-## 1. Instalación inicial
+## 1. Configuración del entorno
 
-```bash
-cd backend
-npm init -y
-npm i -D typescript ts-node-dev @types/node @types/express
-npx tsc --init
-```
-
-En el `tsconfig.json` generado, ajusta como mínimo:
-
-```json
-{
-  "compilerOptions": {
-    "rootDir": "src",
-    "outDir": "dist",
-    "target": "ES2020",
-    "module": "commonjs",
-    "strict": true,
-    "esModuleInterop": true
-  }
-}
-```
-
-## 2. Dependencias del proyecto
-
-```bash
-npm i express cors dotenv zod jsonwebtoken bcrypt
-npm i -D prisma
-npm i @prisma/client
-```
-
-¿Por qué estas y no otras?
-- **express**: minimalista y con muchísimo soporte de IA para generar código correcto.
-- **zod**: valida cada payload que entra a la API (crítico porque n8n le mandará datos
-  extraídos por un LLM, que pueden venir incompletos o mal formados).
-- **jsonwebtoken + bcrypt**: autenticación del admin (email + contraseña).
-- **prisma**: ORM tipado + migraciones.
-
-## 3. Base de datos
-
-```bash
-npx prisma init
-```
-
-Esto crea `prisma/schema.prisma` (ya lo tienes listo, ver abajo) y un `.env`.
-
-Copia `.env.example` a `.env` y completa `DATABASE_URL` con tu conexión real:
+1. Copia `.env.example` a `.env` y completa los valores reales.
 
 ```bash
 cp .env.example .env
 ```
 
-Si no quieres instalar PostgreSQL localmente, la ruta más rápida es Docker:
+2. Variables utilizadas:
+
+| Variable | Uso |
+|---|---|
+| `DATABASE_URL` | Conexión PostgreSQL de desarrollo (Prisma CLI/runtime). |
+| `TEST_DATABASE_URL` | Conexión a otra base PostgreSQL exclusiva para pruebas. Requerida por `npm test`. |
+| `PORT` | Puerto HTTP del servidor (por defecto `3000`). |
+| `NODE_ENV` | `development` o `test`. |
+| `JWT_SECRET` | Clave de firma de los JWT (HS256). No debe quedar en los placeholders de ejemplo. |
+| `JWT_EXPIRES_IN` | Duración del token. Fijada en `8h`. |
+| `N8N_API_TOKEN` | Secreto compartido para las llamadas internas de n8n. |
+| `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_PHONE` | Credenciales del primer administrador; solo las lee `npm run admin:create`. |
+
+`TEST_DATABASE_PASSWORD` se documenta como referencia; ninguna parte del código la consume ni
+la interpola en la URL.
+
+**NUNCA subas el `.env` real a git.** La validación de entorno rechaza los secretos marcados
+como ejemplo en `.env.example`.
+
+## 2. Comandos disponibles
 
 ```bash
-docker run --name radiotaxi-db -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=radiotaxi -p 5432:5432 -d postgres:16
+npm run dev            # arranca en desarrollo con recarga (ts-node-dev src/server.ts)
+npm run build          # compila TypeScript a dist/
+npm start              # ejecuta el build compilado (node dist/server.js)
+npm run admin:create   # crea el primer administrador con ADMIN_* del entorno
+npm test               # pruebas Vitest/Supertest + integración real en PostgreSQL de pruebas
+npm run test:unit      # solo las pruebas que no requieren base de datos
+npm run prisma:migrate # migración de desarrollo (prisma migrate dev)
+npm run prisma:generate
+npm run prisma:studio
 ```
 
-Y tu `DATABASE_URL` quedaría: `postgresql://postgres:postgres@localhost:5432/radiotaxi`
+## 3. Base de datos y migraciones
 
-## 4. Schema y migración
-
-El schema completo (traducido de tu Diagrama E-R) está en `prisma/schema.prisma`. Incluye:
-`configuracion`, `usuarios`, `conductores`, `vehiculos`, `pasajeros`, `ubicaciones_conductor`,
-`solicitudes`, `tarifas` — todas con `eliminado_en` para soft delete.
-
-**Prisma 7 (versión instalada: 7.10.0).** En esta versión la URL de conexión ya no va en el
-datasource del schema; vive en `prisma.config.ts` (que lee `DATABASE_URL` del `.env`).
-`prisma/schema.prisma` solo declara el proveedor `postgresql`.
-
-### Validar el schema
+El esquema está en `prisma/schema.prisma` (`configuracion`, `usuarios`, `conductores`,
+`vehiculos`, `pasajeros`, `ubicaciones_conductor`, `solicitudes`, `tarifas`, con `eliminado_en`
+para soft delete). La URL de conexión vive en `prisma.config.ts`, no en el datasource del
+schema (Prisma 7).
 
 ```bash
 npx prisma validate
-```
-
-### Comprobaciones previas al despliegue
-
-Antes de aplicar migraciones a Supabase se verifica que el destino está vacío y no existe
-historial incompatible:
-
-- Node.js 20+ (probado con v24.20.0) y Prisma 7.10.0.
-- El proyecto de Supabase apunta a la base de desarrollo, con acceso de migración.
-- Sin tablas de aplicación en el esquema `public`, sin enumeraciones de negocio y sin
-  tablas `_prisma_migrations` previas.
-
-### Generar el SQL inicial (sin base sombra)
-
-```bash
-npx prisma migrate diff --from-empty --to-schema prisma/schema.prisma --script
-```
-
-Revisa el SQL generado y guárdalo como una migración versionada
-
-`prisma/migrations/<marca-temporal>_init/migration.sql` junto con
-`prisma/migrations/migration_lock.toml` (proveedor `postgresql`). La migración actual crea
-los ocho modelos y las cinco enumeraciones del schema, sin datos iniciales ni operaciones
-destructivas.
-
-### Aplicar la migración (Prisma Migrate deploy)
-
-```bash
-npx prisma migrate deploy
-```
-
-El comando aplica únicamente las migraciones pendientes que existan en `prisma/migrations/`.
-Es seguro repetirlo: si no hay pendientes no reaplica nada ni recrea tablas.
-
-### Verificar el estado del historial
-
-```bash
-npx prisma migrate status
-```
-
-Debe responder `Database schema is up to date!` y no mostrar migraciones pendientes.
-
-### Generar Prisma Client
-
-```bash
+npx prisma migrate deploy   # aplica solo las migraciones pendientes; reejecutar es seguro
+npx prisma migrate status   # debe responder "Database schema is up to date!"
 npx prisma generate
 ```
 
-Con `prisma.config.ts` presente y el schema válido, genera el cliente en
-`node_modules/@prisma/client` sin necesidad de un módulo de conexión de la aplicación.
-
-> El flujo anterior se ejecutó contra la base de desarrollo: 8 tablas (`configuracion`,
-> `usuarios`, `conductores`, `vehiculos`, `pasajeros`, `ubicaciones_conductor`,
-> `solicitudes`, `tarifas`), 5 enumeraciones (`RolUsuario`, `EstadoConductor`,
-> `EstadoJornada`, `EstadoDisponibilidad`, `EstadoSolicitud`), las 8 tablas quedaron sin
-> registros y una segunda ejecución de `migrate deploy` finalizó sin introducir cambios.
-
-Verifica visualmente con:
+## 4. Arranque y estado del servidor
 
 ```bash
-npx prisma studio
+npm run dev
 ```
 
-## 5. Estructura del código fuente
+Probar en el navegador o con curl:
+
+```bash
+curl http://localhost:3000/health
+```
+
+`GET /health` responde `200 {"status":"ok"}`. Informa únicamente que el proceso está vivo
+(liveness), **no** la disponibilidad de PostgreSQL.
+
+Importar `src/app.ts` no abre un puerto de escucha; el arranque está aislado en `src/server.ts`,
+que además valida el entorno antes de escuchar y cierra HTTP y Prisma ante `SIGINT`/`SIGTERM`.
+
+## 5. Crear el primer administrador
+
+```powershell
+$env:ADMIN_EMAIL="admin@empresa.com"
+$env:ADMIN_PASSWORD="una-contrasena-le-segura-larga"
+$env:ADMIN_PHONE="+59170000000"
+npm run admin:create
+```
+
+Esta validación y sus consecuencias aplican al comando:
+
+- Correo con formato válido, teléfono requerido y contraseña de al menos 12 caracteres y
+  máximo 72 bytes UTF-8.
+- La contraseña se guarda como hash bcrypt (coste 12); nunca en texto plano.
+- Si el correo o el teléfono ya existen (incluso en una cuenta eliminada), el comando termina
+  sin modificar la cuenta y con salida no exitosa.
+- No se ejecuta al iniciar el servidor y no imprime credenciales.
+
+No existe usuario administrador por defecto: debe crearse con este comando antes de poder
+iniciar sesión.
+
+## 6. Autenticación
+
+### Login de administrador
+
+```bash
+curl -X POST http://localhost:3000/api/auth/admin/login \
+  -H "Content-Type: application/json" \
+  -d '{"correo":"admin@empresa.com","contraseña":"una-contrasena-le-segura-larga"}'
+```
+
+Respuesta `200`:
+
+```json
+{
+  "token": "<JWT>",
+  "tokenType": "Bearer",
+  "expiresIn": 28800
+}
+```
+
+- JWT firmado con HS256, 8 horas de validez; `sub` es el `id` del `Usuario.admin`.
+- Credenciales incorrectas, cuenta eliminada, rol no admin o hash ausente devuelven un `401`
+  genérico con el mismo cuerpo, sin revelar si la cuenta existe.
+- Contraseñas con más de 72 bytes, recortadas o menores a 12 caracteres no autentican.
+
+### Middlewares de protección
+
+| Middleware | Credencial aceptada | Protege |
+|---|---|---|
+| `requireAuth` | JWT de usuario activo (cualquier rol) **o** `X-N8N-Token` válido | Rutas de acceso interno. |
+| `requireAdmin` | Solo JWT de usuario activo con rol `admin` | Rutas reservadas al administrador. |
+
+- El rol se consulta en la base en **cada** petición; un cambio de rol o un borrado lógico
+  aplica de inmediato al token vigente.
+- El token n8n permite acceso interno pero **nunca** autoriza rutas de administrador.
+- Cuerpo no autenticado en ruta admin: `401`. Usuario activo sin rol admin en ruta admin: `403`.
+- Un fallo de PostgreSQL se responde como `500` seguro; nunca habilita acceso.
+
+El módulo Configuración (SPEC 04) consumirá estos middlewares: `GET /api/configuracion` con
+`requireAuth` y `PUT /api/configuracion` con `requireAdmin`.
+
+### Formato de errores
+
+Todos los errores usan el mismo contrato:
+
+```json
+{ "error": { "code": "<codigo>", "message": "<mensaje seguro>" } }
+```
+
+Códigos: `VALIDATION_ERROR` (400), `UNAUTHORIZED` (401), `FORBIDDEN` (403), `NOT_FOUND` (404),
+`INTERNAL_ERROR` (500). Ningún error interno expone SQL, stack, URLs ni secretos.
+
+## 7. Pruebas
+
+```bash
+npm test            # Vitest + Supertest + integración con PostgreSQL de pruebas
+npm run test:unit   # solo pruebas sin base de datos
+```
+
+`npm test` exige `TEST_DATABASE_URL` apuntando a una base **exclusiva de pruebas**, distinta de
+la de desarrollo:
+
+- No hay fallback a `DATABASE_URL`: si falta `TEST_DATABASE_URL`, la suite se detiene antes de
+  conectar o escribir.
+- Antes de migrar, la suite verifica en modo solo lectura la identidad de ambos destinos y
+  rechaza el mismo proyecto, alias o referencias ambiguas.
+- Las migraciones existentes se aplican **solo** al destino de pruebas validado.
+- Cada suite crea y limpia únicamente sus propios registros (`spec03-<UUID>`); no se hace
+  limpieza global. No se escribe jamás en la base de desarrollo.
+
+## 8. Estructura del código fuente
 
 ```
 backend/
@@ -159,99 +184,46 @@ backend/
 │   ├── prisma.config.ts   # conexión (DATABASE_URL) y ruta del schema
 │   └── migrations/        # SQL versionado + migration_lock.toml
 ├── src/
+│   ├── config/
+│   │   ├── env.ts         # variables de entorno validadas con Zod
+│   │   └── prisma.ts      # instancia runtime Prisma 7 con adaptador PostgreSQL
+│   ├── middlewares/
+│   │   ├── auth.ts        # requireAuth (JWT/n8n) y requireAdmin
+│   │   └── error-handler.ts
 │   ├── modules/
-│   │   ├── auth/
-│   │   ├── pasajeros/
-│   │   ├── conductores/
-│   │   ├── vehiculos/
-│   │   ├── ubicaciones/
-│   │   ├── motor-asignacion/
-│   │   ├── solicitudes/
-│   │   ├── tarifario/
-│   │   ├── configuracion/
-│   │   └── dashboard/
-│   ├── config/          # conexión a Prisma, variables de entorno tipadas
-│   ├── middlewares/      # auth (JWT admin, token n8n), manejo de errores, validación zod
-│   ├── utils/            # cálculo de distancia (haversine), helpers de fecha, etc.
-│   ├── app.ts            # configuración de Express (middlewares globales, rutas)
-│   └── server.ts         # punto de entrada, arranca el servidor
+│   │   └── auth/          # auth.schema / auth.service / auth.controller / auth.router
+│   ├── scripts/
+│   │   └── create-admin.ts
+│   ├── app.ts             # Express: middlewares globales y rutas (no abre puerto)
+│   └── server.ts          # arranque y cierre ordenado
 ├── tests/
-├── .env.example
-├── package.json
-└── tsconfig.json
+│   ├── setup.ts           # verificación read-only e isolación del destino de pruebas
+│   ├── database-safety.ts # validación de destinos y proyectos Supabase
+│   └── *.test.ts          # health, auth, create-admin, middlewares, database
+├── vitest.config.ts
+├── vitest.unit.config.ts
+├── tsconfig.json
+└── tsconfig.test.json
 ```
 
-Cada módulo sigue el mismo patrón interno:
+## 9. Orden recomendado para construir los módulos
 
-```
-modules/solicitudes/
-├── solicitudes.router.ts       # define las rutas HTTP
-├── solicitudes.controller.ts   # recibe el request, valida, llama al service
-├── solicitudes.service.ts      # lógica de negocio (aquí viven las 14 reglas)
-├── solicitudes.schema.ts       # esquemas zod de entrada/salida
-└── solicitudes.types.ts
-```
+1. **Base HTTP + Auth de administrador** — este módulo (SPEC 03).
+2. **`configuracion`** — radio de búsqueda, teléfono y nombre de empresa (SPEC 04).
+3. **`auth` de conductores** — OTP simulado (módulo 2 del roadmap).
+4. **`conductores` + `vehiculos`** — CRUD y estados.
+5. **`pasajeros`** — identificación por WhatsApp (lo llama n8n).
+6. **`ubicaciones`** — coordenadas y caducidad de 5 minutos.
+7. **`motor-asignacion`** — candidatos más cercanos (Reglas 2, 3, 4).
+8. **`solicitudes`** — ciclo de vida completo (Reglas 1, 5–11).
+9. **`tarifario`** y **`dashboard`**.
 
-## 6. Servidor base
+Cada módulo se implementa contra su spec en `specs/` y se prueba antes de pasar al siguiente.
 
-Crea `src/server.ts`:
+## 10. Cómo conectará n8n con esta API
 
-```ts
-import app from "./app";
-
-const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-  console.log(`Backend corriendo en http://localhost:${PORT}`);
-});
-```
-
-Y `src/app.ts` con un endpoint de salud mínimo:
-
-```ts
-import express from "express";
-import cors from "cors";
-
-const app = express();
-app.use(cors());
-app.use(express.json());
-
-app.get("/health", (_req, res) => {
-  res.json({ status: "ok" });
-});
-
-export default app;
-```
-
-Levántalo:
-
-```bash
-npx ts-node-dev src/server.ts
-```
-
-Prueba en el navegador o con curl: `curl http://localhost:3000/health`
-
-## 7. Orden recomendado para construir los módulos
-
-No construyas todo a la vez. Este orden respeta las dependencias reales entre entidades:
-
-1. **`configuracion`** — es la base (radio de búsqueda, teléfono de atención).
-2. **`auth`** — login admin + autenticación conductor (teléfono + OTP simulado al inicio).
-3. **`conductores` + `vehiculos`** — CRUD y estados (pendiente/aprobado/suspendido, jornada, disponibilidad).
-4. **`pasajeros`** — registro por WhatsApp (lo llamará n8n).
-5. **`ubicaciones`** — recibir ubicación del conductor y calcular `es_valida`.
-6. **`motor-asignacion`** — la lógica de filtrado + los 3 candidatos más cercanos (Reglas 2, 3, 4).
-7. **`solicitudes`** — el ciclo de vida completo (Reglas 1, 5–11). Es el módulo más grande.
-8. **`tarifario`** — CRUD simple de tarifas, consumido por n8n para responder al pasajero.
-9. **`dashboard`** — endpoints de agregación (conductores activos, solicitudes activas, indicadores).
-
-Cada módulo, cuando lo termines, debería tener sus rutas probadas con curl o Postman antes
-de pasar al siguiente.
-
-## 8. Cómo conectará n8n con esta API
-
-n8n no tendrá acceso directo a la base de datos. Llamará a endpoints REST protegidos con un
-token fijo (`N8N_API_TOKEN` del `.env`), por ejemplo:
+n8n no tendrá acceso directo a la base de datos. Llamará a endpoints REST con el header
+`X-N8N-Token` igual al secreto del `.env`, por ejemplo:
 
 ```
 POST /api/pasajeros/identificar
@@ -261,28 +233,11 @@ POST /api/solicitudes/:id/seleccionar-conductor
 GET  /api/tarifas
 ```
 
-El diseño exacto de endpoints se define módulo por módulo; este README se irá actualizando
-a medida que avances.
-
-## Scripts sugeridos en `package.json`
-
-```json
-{
-  "scripts": {
-    "dev": "ts-node-dev --respawn src/server.ts",
-    "build": "tsc",
-    "start": "node dist/server.js",
-    "prisma:migrate": "prisma migrate dev",
-    "prisma:deploy": "prisma migrate deploy",
-    "prisma:generate": "prisma generate",
-    "prisma:studio": "prisma studio"
-  }
-}
-```
+El diseño exacto de endpoints se define módulo por módulo en cada spec.
 
 ## Siguientes pasos
 
-Una vez que `/health` responde y las migraciones corrieron sin errores, continúa con el
-módulo `configuracion` (paso 1 de la lista de arriba). Si trabajas con un asistente de IA
-(Claude Code, Cursor, etc.), pásale este README + `docs/REGLAS_DE_NEGOCIO.md` como contexto
-antes de pedirle que genere cada módulo — así respeta las reglas de negocio desde el primer intento.
+- Revisar y aprobar la implementación de `specs/03-base-auth-admin.md` y marcarla como
+  **Implementado**.
+- Crear el administrador con `npm run admin:create` antes de probar el login.
+- Continuar con `specs/04-configuracion.md` (módulo Configuración).
