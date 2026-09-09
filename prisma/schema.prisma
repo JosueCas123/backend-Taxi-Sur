@@ -1,0 +1,195 @@
+// ============================================================================
+// Schema de Prisma — Agente Inteligente para Radio Taxis (MVP)
+// Basado en: "Modelo de Datos – Diagrama E-R y Definición de Tablas (MVP)"
+// Alcance: single-tenant (una sola empresa), con soft delete en todas las tablas.
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------
+// CONFIGURACION — fila única (id = 1) con los parámetros de la empresa
+// -----------------------------------------------------------------------
+model Configuracion {
+  id                      Int      @id @default(1)
+  nombreEmpresa           String   @map("nombre_empresa")
+  radioMaximoBusquedaKm   Int      @default(5) @map("radio_maximo_busqueda_km")
+  telefonoCentroAtencion  String?  @map("telefono_centro_atencion")
+  creadoEn                DateTime @default(now()) @map("creado_en")
+  actualizadoEn           DateTime @updatedAt @map("actualizado_en")
+  eliminadoEn             DateTime? @map("eliminado_en")
+
+  @@map("configuracion")
+}
+
+// -----------------------------------------------------------------------
+// USUARIOS — autenticación (admin y conductores comparten esta tabla)
+// -----------------------------------------------------------------------
+enum RolUsuario {
+  admin
+  conductor
+}
+
+model Usuario {
+  id                String     @id @default(uuid())
+  rol               RolUsuario
+  telefono          String     @unique
+  correoElectronico String?    @unique @map("correo_electronico")
+  hashContrasena    String?    @map("hash_contrasena")
+  creadoEn          DateTime   @default(now()) @map("creado_en")
+  eliminadoEn       DateTime?  @map("eliminado_en")
+
+  conductor Conductor?
+
+  @@map("usuarios")
+}
+
+// -----------------------------------------------------------------------
+// CONDUCTORES
+// -----------------------------------------------------------------------
+enum EstadoConductor {
+  pendiente
+  aprobado
+  rechazado
+  suspendido
+}
+
+enum EstadoJornada {
+  no_iniciada
+  activa
+  finalizada
+}
+
+enum EstadoDisponibilidad {
+  disponible
+  no_disponible
+  solicitud_pendiente
+  en_servicio
+}
+
+model Conductor {
+  id                    String                @id @default(uuid())
+  usuarioId             String                @unique @map("usuario_id")
+  nombreCompleto        String                @map("nombre_completo")
+  cedulaIdentidad       String                @map("cedula_identidad")
+  estado                EstadoConductor        @default(pendiente)
+  estadoJornada         EstadoJornada          @default(no_iniciada) @map("estado_jornada")
+  estadoDisponibilidad  EstadoDisponibilidad   @default(no_disponible) @map("estado_disponibilidad")
+  creadoEn              DateTime               @default(now()) @map("creado_en")
+  eliminadoEn           DateTime?              @map("eliminado_en")
+
+  usuario               Usuario                @relation(fields: [usuarioId], references: [id])
+  vehiculos             Vehiculo[]
+  ubicaciones           UbicacionConductor[]
+  solicitudesAsignadas  Solicitud[]
+
+  @@map("conductores")
+}
+
+// -----------------------------------------------------------------------
+// VEHICULOS
+// -----------------------------------------------------------------------
+model Vehiculo {
+  id                  String    @id @default(uuid())
+  conductorId         String    @map("conductor_id")
+  placa               String    @unique
+  marca               String
+  modelo              String
+  color               String
+  capacidadPasajeros  Int       @map("capacidad_pasajeros")
+  creadoEn            DateTime  @default(now()) @map("creado_en")
+  eliminadoEn         DateTime? @map("eliminado_en")
+
+  conductor Conductor @relation(fields: [conductorId], references: [id])
+
+  @@map("vehiculos")
+}
+
+// -----------------------------------------------------------------------
+// PASAJEROS
+// -----------------------------------------------------------------------
+model Pasajero {
+  id                         String    @id @default(uuid())
+  whatsappId                 String    @unique @map("whatsapp_id")
+  nombre                     String
+  aceptacionAvisoPrivacidad  DateTime? @map("aceptacion_aviso_privacidad")
+  creadoEn                   DateTime  @default(now()) @map("creado_en")
+  eliminadoEn                DateTime? @map("eliminado_en")
+
+  solicitudes Solicitud[]
+
+  @@map("pasajeros")
+}
+
+// -----------------------------------------------------------------------
+// UBICACIONES_CONDUCTOR — historial de ubicaciones reportadas
+// -----------------------------------------------------------------------
+model UbicacionConductor {
+  id            BigInt    @id @default(autoincrement())
+  conductorId   String    @map("conductor_id")
+  latitud       Float
+  longitud      Float
+  horaRegistro  DateTime  @default(now()) @map("hora_registro")
+  esValida      Boolean   @default(true) @map("es_valida") // Regla 9: <= 5 min
+  eliminadoEn   DateTime? @map("eliminado_en")
+
+  conductor Conductor @relation(fields: [conductorId], references: [id])
+
+  @@map("ubicaciones_conductor")
+}
+
+// -----------------------------------------------------------------------
+// SOLICITUDES — ciclo de vida completo del servicio
+// -----------------------------------------------------------------------
+enum EstadoSolicitud {
+  creada
+  buscando
+  conductor_seleccionado
+  esperando_respuesta
+  aceptada
+  rechazada
+  expirada
+  en_servicio
+  finalizada
+  sin_conductor
+}
+
+model Solicitud {
+  id                   String           @id @default(uuid())
+  pasajeroId           String           @map("pasajero_id")
+  conductorAsignadoId  String?          @map("conductor_asignado_id")
+  estado               EstadoSolicitud  @default(creada)
+  latitudRecogida      Float            @map("latitud_recogida")
+  longitudRecogida     Float            @map("longitud_recogida")
+  destino              String?
+  expiraEn             DateTime?        @map("expira_en") // Regla 6: 1 minuto
+  aceptadaEn           DateTime?        @map("aceptada_en")
+  finalizadaEn         DateTime?        @map("finalizada_en")
+  creadoEn             DateTime         @default(now()) @map("creado_en")
+  eliminadoEn          DateTime?        @map("eliminado_en")
+
+  pasajero            Pasajero   @relation(fields: [pasajeroId], references: [id])
+  conductorAsignado   Conductor? @relation(fields: [conductorAsignadoId], references: [id])
+
+  @@map("solicitudes")
+}
+
+// -----------------------------------------------------------------------
+// TARIFAS — tarifario oficial (la IA solo lo consulta, nunca lo inventa)
+// -----------------------------------------------------------------------
+model Tarifa {
+  id             String    @id @default(uuid())
+  descripcion    String
+  monto          Decimal   @db.Decimal(10, 2)
+  vigenciaDesde  DateTime  @map("vigencia_desde") @db.Date
+  creadoEn       DateTime  @default(now()) @map("creado_en")
+  eliminadoEn    DateTime? @map("eliminado_en")
+
+  @@map("tarifas")
+}
