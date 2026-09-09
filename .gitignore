@@ -1,0 +1,38 @@
+# Dependencias
+node_modules/
+
+# Build de TypeScript
+dist/
+
+# Secretos (sí versiona .env.example)
+.env
+.env.*
+!.env.example
+
+# Logs y debug
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Tests / coverage (cuando existan)
+coverage/
+.nyc_output/
+
+# Prisma (el cliente generado vive en node_modules)
+*.db
+*.db-journal
+
+# Sistema / editor
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+.idea/
+.vscode/
+*.tsbuildinfo
+
+# Cachés locales
+.cache/
+.tmp/

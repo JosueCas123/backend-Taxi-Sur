@@ -1,0 +1,21 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "references": {
+    "R-G": {
+      "path": "../docs",
+      "description": "Reglas de negocio del sistema para la creacion de usuarios y sus roles "
+    }
+    
+ 
+    },
+  "agent": {
+    "spec": {
+      "mode": "subagent",
+      "description": "Genera specs de módulos siguiendo la plantilla del skill spec."
+    },
+    "spec-impl": {
+      "mode": "subagent",
+      "description": "Implementa módulos a partir de los specs generados."
+    }
+  }
+}
