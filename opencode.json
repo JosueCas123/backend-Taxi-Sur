@@ -5,9 +5,13 @@
       "path": "../docs",
       "description": "Reglas de negocio del sistema para la creacion de usuarios y sus roles "
     }
-    
- 
-    },
+  },
+  "mcp": {
+    "context7": {
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp"
+    }
+  },
   "agent": {
     "spec": {
       "mode": "subagent",
@@ -16,6 +20,15 @@
     "spec-impl": {
       "mode": "subagent",
       "description": "Implementa módulos a partir de los specs generados."
+    },
+    "spec-verify": {
+      "mode": "subagent",
+      "description": "Verifica los criterios de aceptación de un spec implementado, los corrige y marca los checks con evidencia.",
+      "model": "openrouter/qwen/qwen-3.6-plus",
+      "temperature": 0.1,
+      "permission": {
+        "edit": "allow"
+      }
     }
   }
 }
