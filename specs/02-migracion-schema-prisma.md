@@ -106,19 +106,24 @@ Si el acceso requiere cambios fuera de estas rutas, se debe aclarar el ajuste an
 
 ## 7. Criterios de aceptacion
 
-- [ ] Se confirma que el destino es el proyecto de desarrollo de Supabase previsto, sin revelar credenciales.
+- [x] Se confirma que el destino es el proyecto de desarrollo de Supabase previsto, sin revelar credenciales.
 - [ ] La inspeccion previa confirma la ausencia de tablas de la aplicacion y de un historial de migraciones incompatible.
-- [ ] Prisma valida `prisma/schema.prisma` correctamente con la configuracion de Prisma 7.
-- [ ] El diff de los modelos no contiene cambios de campos, relaciones, enumeraciones o restricciones respecto del esquema inicial.
-- [ ] El SQL inicial y `migration_lock.toml` existen bajo `prisma/migrations/` y pueden versionarse sin secretos.
-- [ ] La revision del SQL confirma que no contiene operaciones destructivas ni cambios sobre esquemas administrados por Supabase.
-- [ ] Migrate deploy finaliza correctamente y Migrate status informa que no hay migraciones pendientes.
-- [ ] Las ocho tablas y cinco enumeraciones de negocio existen en el esquema objetivo.
-- [ ] Las columnas, claves primarias, claves foraneas, restricciones unicas y valores por defecto de la base coinciden con el SQL revisado y el esquema Prisma, considerando los valores generados por Prisma Client.
+- [x] Prisma valida `prisma/schema.prisma` correctamente con la configuracion de Prisma 7.
+- [x] El diff de los modelos no contiene cambios de campos, relaciones, enumeraciones o restricciones respecto del esquema inicial.
+- [x] El SQL inicial y `migration_lock.toml` existen bajo `prisma/migrations/` y pueden versionarse sin secretos.
+- [x] La revision del SQL confirma que no contiene operaciones destructivas ni cambios sobre esquemas administrados por Supabase.
+- [x] Migrate deploy finaliza correctamente y Migrate status informa que no hay migraciones pendientes.
+- [x] Las ocho tablas y cinco enumeraciones de negocio existen en el esquema objetivo.
+- [x] Las columnas, claves primarias, claves foraneas, restricciones unicas y valores por defecto de la base coinciden con el SQL revisado y el esquema Prisma, considerando los valores generados por Prisma Client.
 - [ ] Las ocho tablas de negocio permanecen sin registros tras la migracion.
-- [ ] Una segunda ejecucion de Migrate deploy finaliza sin volver a aplicar la migracion ni recrear tablas.
-- [ ] Prisma Client se genera correctamente sin agregar un modulo de conexion de la aplicacion.
-- [ ] `README.md` documenta el flujo ejecutado y las comprobaciones reproducibles sin credenciales.
+- [x] Una segunda ejecucion de Migrate deploy finaliza sin volver a aplicar la migracion ni recrear tablas.
+- [x] Prisma Client se genera correctamente sin agregar un modulo de conexion de la aplicacion.
+- [x] `README.md` documenta el flujo ejecutado y las comprobaciones reproducibles sin credenciales.
+
+> **Nota de verificacion (2026-09-09):** El criterio 10 (tablas vacías) no pudo verificarse
+> porque el MCP de Supabase apunta a un proyecto diferente del que usa Prisma.
+> Se requiere verificacion manual desde el Supabase Dashboard del proyecto
+> `db.bhenlcvatnoysexzervk` ejecutando `SELECT COUNT(*) FROM configuracion, usuarios, conductores, vehiculos, pasajeros, ubicaciones_conductor, solicitudes, tarifas`.
 
 ## 8. Decisiones tomadas y descartadas
 
