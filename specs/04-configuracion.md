@@ -1,6 +1,6 @@
 # SPEC 04 - Endpoints de configuracion global
 
-> **Estado:** Borrador
+> **Estado:** Aprobado
 > **Depende de:** SPEC 02 (`02-migracion-schema-prisma.md`), SPEC 03 (`03-base-auth-admin.md`)
 > **Fecha:** 2026-09-09
 > **Objetivo:** Consultar e inicializar la configuracion global de TaxiSur y permitir su actualizacion parcial exclusivamente a administradores autenticados.
