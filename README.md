@@ -143,8 +143,8 @@ Respuesta `200`:
 - Cuerpo no autenticado en ruta admin: `401`. Usuario activo sin rol admin en ruta admin: `403`.
 - Un fallo de PostgreSQL se responde como `500` seguro; nunca habilita acceso.
 
-El módulo Configuración (SPEC 04) consumirá estos middlewares: `GET /api/configuracion` con
-`requireAuth` y `PUT /api/configuracion` con `requireAdmin`.
+El módulo Configuración consume estos middlewares: `GET /api/configuracion` con `requireAuth` y
+`PUT /api/configuracion` con `requireAdmin`. Ver [Configuración global](#7-configuración-global-spec-04).
 
 ### Formato de errores
 
@@ -155,9 +155,79 @@ Todos los errores usan el mismo contrato:
 ```
 
 Códigos: `VALIDATION_ERROR` (400), `UNAUTHORIZED` (401), `FORBIDDEN` (403), `NOT_FOUND` (404),
-`INTERNAL_ERROR` (500). Ningún error interno expone SQL, stack, URLs ni secretos.
+`CONFIGURATION_DELETED` (409), `INTERNAL_ERROR` (500). Ningún error interno expone SQL, stack,
+URLs ni secretos.
 
-## 7. Pruebas
+## 7. Configuración global (SPEC 04)
+
+`configuracion` es una fila única (`id = 1`) con el nombre de la empresa, el radio máximo de
+búsqueda y el teléfono del centro de atención. La fila se crea automáticamente y de forma segura
+ante peticiones concurrentes en la primera **lectura autenticada** o en el primer **PUT de
+administrador**; una fila existente conserva sus valores y no se vuelve a sembrar en cada arranque.
+
+### GET /api/configuracion
+
+Lee o inicializa la configuración. Requiere JWT de usuario activo (cualquier rol) o token n8n
+(`requireAuth`). Sin credencial válida devuelve `401` y **no** crea la fila.
+
+```bash
+curl http://localhost:3000/api/configuracion \
+  -H "Authorization: Bearer <JWT>"
+
+# desde n8n:
+curl http://localhost:3000/api/configuracion \
+  -H "X-N8N-Token: <N8N_API_TOKEN>"
+```
+
+### PUT /api/configuracion
+
+Actualización **parcial** exclusiva de administrador (`requireAdmin`): solo se actualizan los
+campos enviados y los omitidos se conservan. La ruta autentica y autoriza **antes** de validar
+el cuerpo; el token n8n por sí solo no autoriza escritura.
+
+```bash
+curl -X PUT http://localhost:3000/api/configuracion \
+  -H "Authorization: Bearer <JWT-de-admin>" \
+  -H "Content-Type: application/json" \
+  -d '{"nombreEmpresa":"Radio Taxi Sur","radioMaximoBusquedaKm":8}'
+```
+
+- Campos editables: `nombreEmpresa` (string recortado de 1 a 100), `radioMaximoBusquedaKm`
+  (entero entre 1 y 2147483647, sin coerción de strings) y `telefonoCentroAtencion`
+  (`null` o string recortado de 1 a 30).
+- El cuerpo debe incluir al menos uno de esos tres campos. Un `null` explícito en
+  `telefonoCentroAtencion` limpia el teléfono.
+- Cuerpos vacíos, campos desconocidos o tipos inválidos devuelven `400` sin escribir.
+- Si la fila está eliminada lógicamente, GET y PUT devuelven `409 CONFIGURATION_DELETED` y no la
+  restauran ni la reemplazan.
+
+Respuesta `200` (misma forma para GET y PUT):
+
+```json
+{
+  "id": 1,
+  "nombreEmpresa": "TaxiSur - Pruebas",
+  "radioMaximoBusquedaKm": 5,
+  "telefonoCentroAtencion": "+59100000000",
+  "actualizadoEn": "2026-09-09T00:00:00.000Z"
+}
+```
+
+El DTO expone solo los cinco campos anteriores; `actualizadoEn` es una fecha ISO 8601 en UTC.
+No se exponen `creadoEn` ni `eliminadoEn`.
+
+**Advertencia:** `+59100000000` es un **marcador ficticio, no un contacto operativo**. La fila se
+inicializa con ese valor solo para poder arrancar sin datos reales. Antes de cualquier uso
+operativo reemplázalo mediante el PUT de administrador:
+
+```bash
+curl -X PUT http://localhost:3000/api/configuracion \
+  -H "Authorization: Bearer <JWT-de-admin>" \
+  -H "Content-Type: application/json" \
+  -d '{"telefonoCentroAtencion":"+59171234567"}'
+```
+
+## 8. Pruebas
 
 ```bash
 npm test            # Vitest + Supertest + integración con PostgreSQL de pruebas
@@ -172,10 +242,10 @@ la de desarrollo:
 - Antes de migrar, la suite verifica en modo solo lectura la identidad de ambos destinos y
   rechaza el mismo proyecto, alias o referencias ambiguas.
 - Las migraciones existentes se aplican **solo** al destino de pruebas validado.
-- Cada suite crea y limpia únicamente sus propios registros (`spec03-<UUID>`); no se hace
-  limpieza global. No se escribe jamás en la base de desarrollo.
+- Cada suite crea y limpia únicamente sus propios registros (`spec03-<UUID>`, `spec04-<UUID>`);
+  no se hace limpieza global. No se escribe jamás en la base de desarrollo.
 
-## 8. Estructura del código fuente
+## 9. Estructura del código fuente
 
 ```
 backend/
@@ -191,7 +261,8 @@ backend/
 │   │   ├── auth.ts        # requireAuth (JWT/n8n) y requireAdmin
 │   │   └── error-handler.ts
 │   ├── modules/
-│   │   └── auth/          # auth.schema / auth.service / auth.controller / auth.router
+│   │   ├── auth/          # auth.schema / auth.service / auth.controller / auth.router
+│   │   └── configuracion/ # configuracion.schema / .service / .controller / .router
 │   ├── scripts/
 │   │   └── create-admin.ts
 │   ├── app.ts             # Express: middlewares globales y rutas (no abre puerto)
@@ -199,14 +270,14 @@ backend/
 ├── tests/
 │   ├── setup.ts           # verificación read-only e isolación del destino de pruebas
 │   ├── database-safety.ts # validación de destinos y proyectos Supabase
-│   └── *.test.ts          # health, auth, create-admin, middlewares, database
+│   └── *.test.ts          # health, auth, create-admin, middlewares, database, configuracion
 ├── vitest.config.ts
 ├── vitest.unit.config.ts
 ├── tsconfig.json
 └── tsconfig.test.json
 ```
 
-## 9. Orden recomendado para construir los módulos
+## 10. Orden recomendado para construir los módulos
 
 1. **Base HTTP + Auth de administrador** — este módulo (SPEC 03).
 2. **`configuracion`** — radio de búsqueda, teléfono y nombre de empresa (SPEC 04).
@@ -220,7 +291,7 @@ backend/
 
 Cada módulo se implementa contra su spec en `specs/` y se prueba antes de pasar al siguiente.
 
-## 10. Cómo conectará n8n con esta API
+## 11. Cómo conectará n8n con esta API
 
 n8n no tendrá acceso directo a la base de datos. Llamará a endpoints REST con el header
 `X-N8N-Token` igual al secreto del `.env`, por ejemplo:
@@ -237,7 +308,7 @@ El diseño exacto de endpoints se define módulo por módulo en cada spec.
 
 ## Siguientes pasos
 
-- Revisar y aprobar la implementación de `specs/03-base-auth-admin.md` y marcarla como
-  **Implementado**.
-- Crear el administrador con `npm run admin:create` antes de probar el login.
-- Continuar con `specs/04-configuracion.md` (módulo Configuración).
+- Verificar los criterios de aceptación de `specs/04-configuracion.md` y, si pasan, marcarla como
+  **Implementado** antes de fusionar la rama.
+- Crear el administrador con `npm run admin:create` antes de probar login y PUT de configuración.
+- Continuar con el módulo de conductores (`auth` OTP simulado, módulo 2 del roadmap).

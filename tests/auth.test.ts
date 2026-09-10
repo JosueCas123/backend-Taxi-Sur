@@ -15,7 +15,7 @@ const unauthorized = { error: { code: "UNAUTHORIZED", message: "Credenciales inv
 const validation = { error: { code: "VALIDATION_ERROR", message: "Entrada invalida" } };
 
 beforeAll(async () => {
-  const databaseUrl = inject("adminTestDatabaseUrl");
+  const databaseUrl = inject("adminTestDatabaseUrl") ;
   if (!databaseUrl || process.env.DATABASE_URL !== databaseUrl) throw new Error("Falta destino validado por el setup");
   prisma = (await import("../src/config/prisma")).prisma;
   const hash = await bcrypt.hash(password, 12);

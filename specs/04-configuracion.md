@@ -1,6 +1,6 @@
 # SPEC 04 - Endpoints de configuracion global
 
-> **Estado:** Borrador
+> **Estado:** Implementado
 > **Depende de:** SPEC 02 (`02-migracion-schema-prisma.md`), SPEC 03 (`03-base-auth-admin.md`)
 > **Fecha:** 2026-09-09
 > **Objetivo:** Consultar e inicializar la configuracion global de TaxiSur y permitir su actualizacion parcial exclusivamente a administradores autenticados.
@@ -130,24 +130,24 @@ Cada paso conserva las rutas existentes y deja las pruebas previas funcionando.
 
 ## 6. Criterios de aceptacion
 
-- [ ] `npm run build` y `npm test` pasan, incluidas las pruebas de SPEC 03.
-- [ ] GET sin credenciales devuelve 401 y no crea la fila.
-- [ ] GET con JWT de usuario activo o token n8n valido devuelve 200.
-- [ ] Primer GET autenticado crea exactamente id=1 con los tres valores predeterminados confirmados.
-- [ ] GET repetido no cambia datos ni `actualizadoEn`.
-- [ ] GET y PUT devuelven solo los cinco campos del DTO, con fecha ISO UTC.
-- [ ] PUT sin JWT valido devuelve 401; con JWT de usuario activo no admin devuelve 403; con solo token n8n no permite escribir.
-- [ ] PUT de admin actualiza uno o varios campos y conserva los omitidos.
-- [ ] PUT valido sobre tabla vacia crea la fila con defaults para los campos omitidos y valores enviados para los restantes.
-- [ ] PUT con telefono null limpia el campo y un GET posterior devuelve null.
-- [ ] Cuerpo vacio, desconocidos, campos no editables, tipos incorrectos, radio cero/negativo/fraccionario/fuera de rango y strings fuera de limites devuelven 400 sin escritura.
-- [ ] Los strings aceptados se almacenan recortados; strings de solo espacios se rechazan.
-- [ ] GET y PUT sobre fila eliminada devuelven 409 y preservan todos sus datos.
-- [ ] Inicializaciones GET/PUT concurrentes no generan duplicados, errores de unicidad sin controlar ni perdida de los valores actualizados por PUT.
-- [ ] Dos PUT concurrentes de campos diferentes conservan ambas actualizaciones.
-- [ ] Fallo de base produce 500 con error JSON seguro, sin datos inventados ni detalles internos.
-- [ ] Todas las pruebas con escrituras usan exclusivamente el destino separado validado por SPEC 03.
-- [ ] README advierte que `+59100000000` no es un telefono operativo y muestra como reemplazarlo mediante PUT admin.
+- [x] `npm run build` y `npm test` pasan, incluidas las pruebas de SPEC 03.
+- [x] GET sin credenciales devuelve 401 y no crea la fila.
+- [x] GET con JWT de usuario activo o token n8n valido devuelve 200.
+- [x] Primer GET autenticado crea exactamente id=1 con los tres valores predeterminados confirmados.
+- [x] GET repetido no cambia datos ni `actualizadoEn`.
+- [x] GET y PUT devuelven solo los cinco campos del DTO, con fecha ISO UTC.
+- [x] PUT sin JWT valido devuelve 401; con JWT de usuario activo no admin devuelve 403; con solo token n8n no permite escribir.
+- [x] PUT de admin actualiza uno o varios campos y conserva los omitidos.
+- [x] PUT valido sobre tabla vacia crea la fila con defaults para los campos omitidos y valores enviados para los restantes.
+- [x] PUT con telefono null limpia el campo y un GET posterior devuelve null.
+- [x] Cuerpo vacio, desconocidos, campos no editables, tipos incorrectos, radio cero/negativo/fraccionario/fuera de rango y strings fuera de limites devuelven 400 sin escritura.
+- [x] Los strings aceptados se almacenan recortados; strings de solo espacios se rechazan.
+- [x] GET y PUT sobre fila eliminada devuelven 409 y preservan todos sus datos.
+- [x] Inicializaciones GET/PUT concurrentes no generan duplicados, errores de unicidad sin controlar ni perdida de los valores actualizados por PUT.
+- [x] Dos PUT concurrentes de campos diferentes conservan ambas actualizaciones.
+- [x] Fallo de base produce 500 con error JSON seguro, sin datos inventados ni detalles internos.
+- [x] Todas las pruebas con escrituras usan exclusivamente el destino separado validado por SPEC 03.
+- [x] README advierte que `+59100000000` no es un telefono operativo y muestra como reemplazarlo mediante PUT admin.
 
 ## 7. Decisiones tomadas y descartadas
 
