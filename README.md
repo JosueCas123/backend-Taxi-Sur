@@ -130,6 +130,52 @@ Respuesta `200`:
   genérico con el mismo cuerpo, sin revelar si la cuenta existe.
 - Contraseñas con más de 72 bytes, recortadas o menores a 12 caracteres no autentican.
 
+### Login de conductor
+
+```bash
+curl -X POST http://localhost:3000/api/auth/conductor/login \
+  -H "Content-Type: application/json" \
+  -d '{"telefono":"+59170000000","pin":"123456"}'
+```
+
+Respuesta `200`:
+
+```json
+{
+  "token": "<JWT>",
+  "tokenType": "Bearer",
+  "expiresIn": 28800
+}
+```
+
+- El `telefono` se busca exactamente como se envía; la cuenta debe tener rol `conductor`,
+  `eliminadoEn` nulo y `hashContrasena` (el PIN) presente y no vacío.
+- JWT firmado con HS256, 8 horas de validez; `sub` es el `id` del `Usuario`.
+- Teléfono inexistente, PIN incorrecto, cuenta eliminada, rol no conductor o hash ausente
+  devuelven el mismo `401` genérico, sin revelar cuál dato falló.
+- El PIN se compara con bcrypt sobre `usuarios.hashContrasena`; un PIN de más de 72 bytes
+  UTF-8 no autentica. Respuesta con `Cache-Control: no-store`.
+
+### Resetear PIN de un conductor (administrador)
+
+```bash
+curl -X PATCH http://localhost:3000/api/auth/conductor/<id>/resetear-pin \
+  -H "Authorization: Bearer <JWT-de-admin>"
+```
+
+Respuesta `200`:
+
+```json
+{ "pin": "123456" }
+```
+
+- `:id` es el `Usuario.id` (UUID). Solo `requireAdmin`: JWT de usuario activo con rol `admin`;
+  el token n8n por sí solo no autoriza escritura.
+- Genera un PIN numérico de 6 dígitos, lo guarda con bcrypt (coste 12) en `usuarios.hashContrasena`
+  y devuelve el plaintext una sola vez para que el administrador se lo comunique al conductor.
+- Usuario inexistente o eliminado: `404 NOT_FOUND`. Usuario con rol distinto a `conductor`:
+  `400 VALIDATION_ERROR`.
+
 ### Middlewares de protección
 
 | Middleware | Credencial aceptada | Protege |
@@ -242,8 +288,8 @@ la de desarrollo:
 - Antes de migrar, la suite verifica en modo solo lectura la identidad de ambos destinos y
   rechaza el mismo proyecto, alias o referencias ambiguas.
 - Las migraciones existentes se aplican **solo** al destino de pruebas validado.
-- Cada suite crea y limpia únicamente sus propios registros (`spec03-<UUID>`, `spec04-<UUID>`);
-  no se hace limpieza global. No se escribe jamás en la base de desarrollo.
+- Cada suite crea y limpia únicamente sus propios registros (`spec03-<UUID>`, `spec04-<UUID>`,
+  `spec05-<UUID>`); no se hace limpieza global. No se escribe jamás en la base de desarrollo.
 
 ## 9. Estructura del código fuente
 
@@ -281,7 +327,7 @@ backend/
 
 1. **Base HTTP + Auth de administrador** — este módulo (SPEC 03).
 2. **`configuracion`** — radio de búsqueda, teléfono y nombre de empresa (SPEC 04).
-3. **`auth` de conductores** — OTP simulado (módulo 2 del roadmap).
+3. **`auth` de conductores** — login por teléfono y PIN, reseteo del PIN por admin (SPEC 05).
 4. **`conductores` + `vehiculos`** — CRUD y estados.
 5. **`pasajeros`** — identificación por WhatsApp (lo llama n8n).
 6. **`ubicaciones`** — coordenadas y caducidad de 5 minutos.
@@ -311,4 +357,4 @@ El diseño exacto de endpoints se define módulo por módulo en cada spec.
 - Verificar los criterios de aceptación de `specs/04-configuracion.md` y, si pasan, marcarla como
   **Implementado** antes de fusionar la rama.
 - Crear el administrador con `npm run admin:create` antes de probar login y PUT de configuración.
-- Continuar con el módulo de conductores (`auth` OTP simulado, módulo 2 del roadmap).
+- Continuar con el módulo de conductores (`CRUD`, estados y vehículos, módulo 3 del roadmap).
