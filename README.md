@@ -201,8 +201,8 @@ Todos los errores usan el mismo contrato:
 ```
 
 Códigos: `VALIDATION_ERROR` (400), `UNAUTHORIZED` (401), `FORBIDDEN` (403), `NOT_FOUND` (404),
-`CONFIGURATION_DELETED` (409), `INTERNAL_ERROR` (500). Ningún error interno expone SQL, stack,
-URLs ni secretos.
+`CONFIGURATION_DELETED` (409), `CONFLICT` (409), `INVALID_STATE_TRANSITION` (409),
+`INTERNAL_ERROR` (500). Ningún error interno expone SQL, stack, URLs ni secretos.
 
 ## 7. Configuración global (SPEC 04)
 
@@ -273,7 +273,172 @@ curl -X PUT http://localhost:3000/api/configuracion \
   -d '{"telefonoCentroAtencion":"+59171234567"}'
 ```
 
-## 8. Pruebas
+## 8. Conductores y vehículos (SPEC 06)
+
+`conductores` y `vehiculos` modelan el perfil del conductor y su vehículo. La relación es 1:N: un
+conductor puede tener varios vehículos a lo largo del tiempo; los DTOs exponen el **vehículo
+activo más reciente** (`vehiculos.eliminadoEn` nulo, ordenado por `creadoEn` desc). En todas las
+rutas de este módulo, `:id` es el **`Conductor.id`** (UUID), nunca el `Usuario.id`; el perfil
+propio se resuelve comparando el `usuarioId` del conductor con el `sub` del JWT del solicitante.
+
+`telefono` (en `usuarios`) y `placa` (en `vehiculos`) son únicos, incluso contra filas eliminadas
+lógicamente: el registro público y el PATCH de vehículo devuelven `409 CONFLICT` si colisionan y
+no escriben. El registro es **público**; el resto exige autenticación y, salvo el detalle, solo
+`requireAdmin`.
+
+### POST /api/conductores — registro público
+
+Crea `usuario`, `conductor` (estado `pendiente`, jornada `no_iniciada`, disponibilidad
+`no_disponible`) y el primer `vehiculo` dentro de una única transacción; el `pin` se guarda como
+bcrypt (coste 12). No requiere autenticación.
+
+```bash
+curl -X POST http://localhost:3000/api/conductores \
+  -H "Content-Type: application/json" \
+  -d '{
+    "telefono": "+59170000000",
+    "pin": "123456",
+    "nombreCompleto": "Juan Perez",
+    "cedulaIdentidad": "1234567",
+    "vehiculo": {
+      "placa": "1234ABC",
+      "marca": "Toyota",
+      "modelo": "Corolla",
+      "color": "Blanco",
+      "capacidadPasajeros": 4
+    }
+  }'
+```
+
+- `telefono` string recortado 1–30; `pin` numérico de 4 a 6 dígitos (string); `nombreCompleto`
+  1–100; `cedulaIdentidad` 1–50; `vehiculo` exige sus cinco campos, con `placa`/`marca`/`modelo`/
+  `color` recortados 1–30 y `capacidadPasajeros` entero 1–100.
+- `201` devuelve el `ConductorDetalleDto`. Cuerpo inválido: `400 VALIDATION_ERROR`.
+- `409 CONFLICT`: «El telefono ya esta registrado» o «La placa ya esta registrada» (también
+  contra cuentas o vehículos eliminados; si ambos chocan, responde uno de los dos mensajes).
+- Ante un fallo de PostgreSQL la transacción hace rollback y se responde `500` seguro.
+
+### GET /api/conductores — listado administrativo
+
+Lista los conductores no eliminados ordenados por `creadoEn` asc. Solo `requireAdmin`.
+
+```bash
+curl "http://localhost:3000/api/conductores" \
+  -H "Authorization: Bearer <JWT-de-admin>"
+
+curl "http://localhost:3000/api/conductores?estado=pendiente" \
+  -H "Authorization: Bearer <JWT-de-admin>"
+```
+
+- Filtro opcional `estado` con un valor de `pendiente | aprobado | suspendido | rechazado`.
+  Otro valor o campos extra: `400 VALIDATION_ERROR`.
+- `200` con un array de `ListadoConductorDto` (el detalle sin `usuarioId`).
+
+### GET /api/conductores/:id — detalle
+
+Requiere autenticación. Autoriza a: administrador (JWT con rol `admin`), n8n (`X-N8N-Token`) y el
+propio conductor (su `usuarioId` coincide con el `sub` del JWT). Otro conductor: `403 FORBIDDEN`.
+
+```bash
+curl http://localhost:3000/api/conductores/<id> \
+  -H "Authorization: Bearer <JWT-de-admin-o-del-propio-conductor>"
+
+curl http://localhost:3000/api/conductores/<id> \
+  -H "X-N8N-Token: <N8N_API_TOKEN>"
+```
+
+- `200` con `ConductorDetalleDto`. `404 NOT_FOUND` si `:id` no es UUID o el conductor no existe
+  (incluye eliminados). Sin credencial válida: `401`.
+
+### Transiciones de estado (admin)
+
+Cuatro `PATCH` **sin cuerpo**, exclusivos de `requireAdmin`, con transiciones estrictas y
+atómicas (el `update` condicional impide transiciones duplicadas en condiciones de carrera):
+
+| Endpoint | Desde | Hacia | Notificación stub |
+|---|---|---|---|
+| `PATCH /api/conductores/:id/aprobar` | `pendiente` | `aprobado` | sí |
+| `PATCH /api/conductores/:id/rechazar` | `pendiente` | `rechazado` | sí |
+| `PATCH /api/conductores/:id/suspender` | `aprobado` | `suspendido` | no |
+| `PATCH /api/conductores/:id/reactivar` | `suspendido` | `aprobado` | no |
+
+```bash
+curl -X PATCH http://localhost:3000/api/conductores/<id>/aprobar \
+  -H "Authorization: Bearer <JWT-de-admin>"
+```
+
+- `200` con el `ConductorDetalleDto` actualizado.
+- Transición no permitida desde el estado actual: `409 INVALID_STATE_TRANSITION` con el mensaje
+  «Transicion invalida: el conductor esta en estado <estado>».
+- Conductor inexistente, eliminado o `:id` no UUID: `404 NOT_FOUND`.
+- La notificación es un stub sin efectos (`notificaciones.notificarConductor`); nunca bloquea ni
+  hace fallar al endpoint.
+
+### PATCH /api/conductores/:id/vehiculo — actualización parcial (admin)
+
+Actualiza el **vehículo activo más reciente** del conductor. Solo se actualizan los campos
+enviados; los omitidos se conservan. `requireAdmin`.
+
+```bash
+curl -X PATCH http://localhost:3000/api/conductores/<id>/vehiculo \
+  -H "Authorization: Bearer <JWT-de-admin>" \
+  -H "Content-Type: application/json" \
+  -d '{"color": "Negro", "capacidadPasajeros": 5}'
+```
+
+- Campos opcionales (al menos uno): `placa`, `marca`, `modelo`, `color` (string recortado 1–30)
+  y `capacidadPasajeros` (entero 1–100, sin coerción de strings).
+- `200` con `ConductorDetalleDto`. Body vacío o inválido: `400 VALIDATION_ERROR` (sin tocar la
+  base). `409 CONFLICT` «La placa ya esta registrada» si la nueva placa choca (incluye vehículos
+  eliminados).
+- Sin vehículo activo: `404 NOT_FOUND` «Vehiculo no encontrado». Conductor inexistente, eliminado
+  o `:id` no UUID: `404 NOT_FOUND` «Conductor no encontrado».
+
+### DTOs del módulo
+
+DTOs estrictos (Zod `.strict()`): los campos desconocidos en la salida quedan descartados.
+
+`VehiculoDto`:
+
+```json
+{
+  "id": "UUID",
+  "placa": "1234ABC",
+  "marca": "Toyota",
+  "modelo": "Corolla",
+  "color": "Blanco",
+  "capacidadPasajeros": 4
+}
+```
+
+`ConductorDetalleDto` (`vehiculo` puede ser `null`):
+
+```json
+{
+  "id": "UUID",
+  "usuarioId": "UUID",
+  "telefono": "+59170000000",
+  "nombreCompleto": "Juan Perez",
+  "cedulaIdentidad": "1234567",
+  "estado": "pendiente",
+  "estadoJornada": "no_iniciada",
+  "estadoDisponibilidad": "no_disponible",
+  "creadoEn": "2026-09-12T00:00:00.000Z",
+  "vehiculo": { "…": "VehiculoDto" }
+}
+```
+
+`ListadoConductorDto`: el detalle **sin** `usuarioId`.
+
+### Códigos de error propios
+
+Además de los [códigos compartidos](#formato-de-errores):
+
+- `409 CONFLICT`: «El telefono ya esta registrado» / «La placa ya esta registrada» (repetido,
+  incluso contra registros eliminados).
+- `409 INVALID_STATE_TRANSITION`: transición no permitida desde el estado actual del conductor.
+
+## 9. Pruebas
 
 ```bash
 npm test            # Vitest + Supertest + integración con PostgreSQL de pruebas
@@ -291,7 +456,7 @@ la de desarrollo:
 - Cada suite crea y limpia únicamente sus propios registros (`spec03-<UUID>`, `spec04-<UUID>`,
   `spec05-<UUID>`); no se hace limpieza global. No se escribe jamás en la base de desarrollo.
 
-## 9. Estructura del código fuente
+## 10. Estructura del código fuente
 
 ```
 backend/
@@ -308,7 +473,8 @@ backend/
 │   │   └── error-handler.ts
 │   ├── modules/
 │   │   ├── auth/          # auth.schema / auth.service / auth.controller / auth.router
-│   │   └── configuracion/ # configuracion.schema / .service / .controller / .router
+│   │   ├── configuracion/ # configuracion.schema / .service / .controller / .router
+│   │   └── conductores/   # conductores.schema / .service / .controller / .router / notificaciones
 │   ├── scripts/
 │   │   └── create-admin.ts
 │   ├── app.ts             # Express: middlewares globales y rutas (no abre puerto)
@@ -316,14 +482,14 @@ backend/
 ├── tests/
 │   ├── setup.ts           # verificación read-only e isolación del destino de pruebas
 │   ├── database-safety.ts # validación de destinos y proyectos Supabase
-│   └── *.test.ts          # health, auth, create-admin, middlewares, database, configuracion
+│   └── *.test.ts          # health, auth, create-admin, middlewares, database, configuracion, conductores
 ├── vitest.config.ts
 ├── vitest.unit.config.ts
 ├── tsconfig.json
 └── tsconfig.test.json
 ```
 
-## 10. Orden recomendado para construir los módulos
+## 11. Orden recomendado para construir los módulos
 
 1. **Base HTTP + Auth de administrador** — este módulo (SPEC 03).
 2. **`configuracion`** — radio de búsqueda, teléfono y nombre de empresa (SPEC 04).
@@ -337,7 +503,7 @@ backend/
 
 Cada módulo se implementa contra su spec en `specs/` y se prueba antes de pasar al siguiente.
 
-## 11. Cómo conectará n8n con esta API
+## 12. Cómo conectará n8n con esta API
 
 n8n no tendrá acceso directo a la base de datos. Llamará a endpoints REST con el header
 `X-N8N-Token` igual al secreto del `.env`, por ejemplo:
@@ -354,7 +520,7 @@ El diseño exacto de endpoints se define módulo por módulo en cada spec.
 
 ## Siguientes pasos
 
-- Verificar los criterios de aceptación de `specs/04-configuracion.md` y, si pasan, marcarla como
+- Verificar los criterios de aceptación de `specs/06-conductores-vehiculos.md` y, si pasan, marcarla como
   **Implementado** antes de fusionar la rama.
 - Crear el administrador con `npm run admin:create` antes de probar login y PUT de configuración.
-- Continuar con el módulo de conductores (`CRUD`, estados y vehículos, módulo 3 del roadmap).
+- Continuar con el módulo `pasajeros` (identificación por WhatsApp, módulo 4 del roadmap).
