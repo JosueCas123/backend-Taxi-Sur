@@ -171,7 +171,7 @@ Cada paso mantiene el servidor ejecutable y las pruebas anteriores en verde; los
 
 ## 6. Criterios de aceptacion
 
-- [ ] `npm run build` termina sin errores; `npm test` pasa con las pruebas de SPEC 03/04/05 y las nuevas.
+- [x] `npm run build` termina sin errores; `npm test` pasa con las pruebas de SPEC 03/04/05 y las nuevas.
 - [x] `POST /api/conductores` publico crea en una transaccion `usuario` (rol `conductor`, telefono unico, PIN hasheado con bcrypt costo 12 verificable), `conductor` (`pendiente` / `no_iniciada` / `no_disponible`) y `vehiculo`; responde 201 con `ConductorDetalleDto`.
 - [x] Un fallo simulado dentro de la transaccion no deja `usuario` ni `conductor` huerfano.
 - [x] `POST` con telefono o placa ya registrados (incluso eliminados) devuelve 409 `CONFLICT` y el mensaje identifica cual campo conflicto; con ambos, identifica al menos uno.
