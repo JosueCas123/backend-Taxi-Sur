@@ -507,7 +507,86 @@ No se exponen `eliminadoEn` ni otras columnas.
 deberá **rechazar la creación de una solicitud si el pasajero aún no aceptó el aviso**. Este
 módulo solo registra el consentimiento; no implementa ese bloqueo.
 
-## 10. Pruebas
+## 10. Ubicaciones (SPEC 08)
+
+`ubicaciones_conductor` registra el historial de posiciones GPS reportadas por el conductor y
+aplica la **caducidad de 5 minutos de la Regla 9**, calculada siempre en el servidor sobre
+`horaRegistro`. En ambas rutas `:id` es el `Conductor.id` (UUID). El contrato JSON usa camelCase y
+el `UbicacionConductorDto` expone `id` (BigInt) como **string decimal**.
+
+Dos endpoints con acceso opuesto:
+
+| Endpoint | Permiso |
+|---|---|
+| `POST /api/conductores/:id/ubicacion` | Solo el conductor propietario con estado `aprobado` (`requireAuth`). |
+| `GET /api/conductores/:id/ubicacion` | Solo administrador (`requireAdmin`). |
+
+n8n **no** tiene acceso HTTP a ninguno de los dos: en el POST recibe `403` (identidad reconocida
+sin permiso) y en el GET `401`, porque `requireAdmin` solo reconoce credenciales JWT Bearer. El
+**motor de asignación** (módulo futuro) consumirá la caducidad y la última ubicación llamando al
+**servicio interno**, nunca por HTTP. Reportar GPS no vuelve al conductor elegible ni modifica su
+jornada o disponibilidad.
+
+### POST /api/conductores/:id/ubicacion — reportar posición
+
+Solo el conductor propietario `aprobado` (`conductor.usuarioId == sub` del JWT). En una única
+transacción invalida las ubicaciones previas del mismo conductor con más de 5 minutos
+(`horaRegistro < now - 300000` y `esValida = true`) y luego inserta la nueva con `horaRegistro`
+del reloj del servidor y `esValida = true`.
+
+```bash
+curl -X POST http://localhost:3000/api/conductores/<id>/ubicacion \
+  -H "Authorization: Bearer <JWT-del-propio-conductor>" \
+  -H "Content-Type: application/json" \
+  -d '{"latitud": -17.7833, "longitud": -63.1821}'
+```
+
+- Cuerpo estricto: `latitud` finito en `[-90, 90]` y `longitud` finito en `[-180, 180]`. Se
+  rechazan claves desconocidas, NaN/Infinity, arrays, `null`, cuerpos ausentes y cualquier intento
+  de imponer `horaRegistro`, `esValida`, `conductorId` o `id`: `400 VALIDATION_ERROR`.
+- `201 Created` con el `UbicacionConductorDto` de la fila creada.
+- Conductor ajeno (incluidos admin y n8n): `403 FORBIDDEN` sin revelar datos del destino.
+- Propietario en `pendiente`/`rechazado`/`suspendido`: `403 CONDUCTOR_NO_APROBADO`.
+- Conductor inexistente, eliminado o `:id` no UUID: `404 NOT_FOUND` (el UUID inválido no consulta
+  la base). Sin credencial o token inválido: `401 UNAUTHORIZED`.
+
+### GET /api/conductores/:id/ubicacion — última posición (admin)
+
+Busca la última ubicación con `horaRegistro DESC, id DESC` excluyendo registros `eliminadoEn`.
+`esValida` efectiva = bandera persistida **y** `(now - horaRegistro) <= 300000` ms: exactamente
+5 minutos sigue vigente; a partir de 300001 ms caduca. Un registro reciente con bandera `false`
+no se revive.
+
+```bash
+curl http://localhost:3000/api/conductores/<id>/ubicacion \
+  -H "Authorization: Bearer <JWT-de-admin>"
+```
+
+- Conductor (JWT sin rol admin): `403 FORBIDDEN`. n8n: `401` (ver la nota de acceso de arriba).
+- `200` con el `UbicacionConductorDto`. Sin ubicaciones, conductor inexistente/eliminado o `:id`
+  no UUID: `404 NOT_FOUND`.
+- El GET **no escribe**: la caducidad se calcula al responder; la persistencia no cambia.
+
+`UbicacionConductorDto`:
+
+```json
+{
+  "id": "42",
+  "latitud": -17.7833,
+  "longitud": -63.1821,
+  "horaRegistro": "2026-09-15T14:00:00.000Z",
+  "esValida": true
+}
+```
+
+`id` es BigInt serializado como string decimal; las fechas son ISO 8601 en UTC. No se exponen
+`conductorId` ni `eliminadoEn`.
+
+La vigencia se implementa una sola vez como función pura reutilizable
+`esTemporalmenteValida(horaRegistro, now)`, que el motor de asignación usará sin duplicar la
+Regla 9.
+
+## 11. Pruebas
 
 ```bash
 npm test            # Vitest + Supertest + integración con PostgreSQL de pruebas
@@ -523,10 +602,10 @@ la de desarrollo:
   rechaza el mismo proyecto, alias o referencias ambiguas.
 - Las migraciones existentes se aplican **solo** al destino de pruebas validado.
 - Cada suite crea y limpia únicamente sus propios registros (`spec03-<UUID>`, `spec04-<UUID>`,
-  `spec05-<UUID>`, `spec07-<UUID>`); no se hace limpieza global. No se escribe jamás en la base
-  de desarrollo.
+  `spec05-<UUID>`, `spec07-<UUID>`, `spec08-<UUID>`); no se hace limpieza global. No se escribe
+  jamás en la base de desarrollo.
 
-## 11. Estructura del código fuente
+## 12. Estructura del código fuente
 
 ```
 backend/
@@ -545,7 +624,8 @@ backend/
 │   │   ├── auth/          # auth.schema / auth.service / auth.controller / auth.router
 │   │   ├── configuracion/ # configuracion.schema / .service / .controller / .router
 │   │   ├── conductores/   # conductores.schema / .service / .controller / .router / notificaciones
-│   │   └── pasajeros/     # pasajeros.schema / .service / .controller / .router
+│   │   ├── pasajeros/     # pasajeros.schema / .service / .controller / .router
+│   │   └── ubicaciones/   # ubicaciones.schema / .service / .controller / .router
 │   ├── scripts/
 │   │   └── create-admin.ts
 │   ├── app.ts             # Express: middlewares globales y rutas (no abre puerto)
@@ -553,14 +633,14 @@ backend/
 ├── tests/
 │   ├── setup.ts           # verificación read-only e isolación del destino de pruebas
 │   ├── database-safety.ts # validación de destinos y proyectos Supabase
-│   └── *.test.ts          # health, auth, create-admin, middlewares, database, configuracion, conductores, pasajeros
+│   └── *.test.ts          # health, auth, create-admin, middlewares, database, configuracion, conductores, pasajeros, ubicaciones
 ├── vitest.config.ts
 ├── vitest.unit.config.ts
 ├── tsconfig.json
 └── tsconfig.test.json
 ```
 
-## 12. Orden recomendado para construir los módulos
+## 13. Orden recomendado para construir los módulos
 
 1. **Base HTTP + Auth de administrador** — este módulo (SPEC 03).
 2. **`configuracion`** — radio de búsqueda, teléfono y nombre de empresa (SPEC 04).
@@ -574,7 +654,7 @@ backend/
 
 Cada módulo se implementa contra su spec en `specs/` y se prueba antes de pasar al siguiente.
 
-## 13. Cómo conectará n8n con esta API
+## 14. Cómo conectará n8n con esta API
 
 n8n no tendrá acceso directo a la base de datos. Llamará a endpoints REST con el header
 `X-N8N-Token` igual al secreto del `.env`, por ejemplo:
@@ -591,7 +671,8 @@ El diseño exacto de endpoints se define módulo por módulo en cada spec.
 
 ## Siguientes pasos
 
-- Verificar los criterios de aceptación de `specs/06-conductores-vehiculos.md` y de
-  `specs/07-pasajeros.md` y, si pasan, marcarlas como **Implementado** antes de fusionar las ramas.
+- Verificar los criterios de aceptación de `specs/08-ubicaciones.md` y, si pasan, marcarla como
+  **Implementado** antes de fusionar la rama.
 - Crear el administrador con `npm run admin:create` antes de probar login y PUT de configuración.
-- Continuar con el módulo `ubicaciones` (módulo 5 del roadmap): registro y caducidad de coordenadas.
+- Continuar con el módulo `motor-asignacion` (módulo 6 del roadmap): selección de candidatos más
+  cercanos con la Regla 9 reutilizando `esTemporalmenteValida`.
