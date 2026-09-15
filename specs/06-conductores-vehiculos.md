@@ -1,6 +1,6 @@
 # SPEC 06 — Conductores y vehiculos
 
-> **Estado:** Aprobado
+> **Estado:** Implementado
 > **Depende de:** SPEC 03 (`03-base-auth-admin.md`), SPEC 05 (`05-conductor-auth.md`)
 > **Fecha:** 2026-09-11
 > **Objetivo:** Permitir el primer registro publico de un conductor junto con su vehiculo y habilitar a un administrador a gestionar conductores y sus vehiculos.
@@ -172,22 +172,22 @@ Cada paso mantiene el servidor ejecutable y las pruebas anteriores en verde; los
 ## 6. Criterios de aceptacion
 
 - [ ] `npm run build` termina sin errores; `npm test` pasa con las pruebas de SPEC 03/04/05 y las nuevas.
-- [ ] `POST /api/conductores` publico crea en una transaccion `usuario` (rol `conductor`, telefono unico, PIN hasheado con bcrypt costo 12 verificable), `conductor` (`pendiente` / `no_iniciada` / `no_disponible`) y `vehiculo`; responde 201 con `ConductorDetalleDto`.
-- [ ] Un fallo simulado dentro de la transaccion no deja `usuario` ni `conductor` huerfano.
-- [ ] `POST` con telefono o placa ya registrados (incluso eliminados) devuelve 409 `CONFLICT` y el mensaje identifica cual campo conflicto; con ambos, identifica al menos uno.
-- [ ] Body incompleto, campos desconocidos, tipos invalidos, pin que no sea numerico de 4 a 6 digitos, o capacidad fuera de 1 a 100 devuelven 400 sin escritura ni consulta.
-- [ ] `GET /api/conductores` sin JWT valido devuelve 401; con JWT de conductor devuelve 403; con solo token n8n vuelve 401 y no lista.
-- [ ] El listado devuelve `ListadoConductorDto[]` con el vehiculo activo, ordenado por `creadoEn` ascendente y excluyendo eliminados.
-- [ ] `?estado=` con valor ajeno al enum devuelve 400; cada valor del enum filtra correctamente.
-- [ ] `GET /api/conductores/:id` devuelve 200 para admin, conductor propietario y token n8n interno; 403 para conductor ajeno; 404 para inexistente, eliminado o `:id` no UUID.
-- [ ] `aprobar`/`rechazar` solo desde `pendiente`; `suspender` solo desde `aprobado`; `reactivar` solo desde `suspendido`. Cualquier otra transicion devuelve 409 `INVALID_STATE_TRANSITION` con el estado actual.
-- [ ] `aprobar`/`rechazar` invocan `notificarConductor()` sin efectos reales ni fallo del endpoint.
-- [ ] Las transiciones requieren admin: 401 sin JWT, 403 con JWT no admin; conductor inexistente o eliminado → 404.
-- [ ] `PATCH /api/conductores/:id/vehiculo` actualiza solo lo enviado, conserva los omitidos y devuelve 200 con el detalle actualizado.
-- [ ] `PATCH .../vehiculo` con placa duplicada devuelve 409; body vacio o invalido devuelve 400; JWT de conductor devuelve 403; conductor sin vehiculo activo devuelve 404.
-- [ ] `:id` no UUID se maneja como 404 en todos los endpoints de conductor sin consultar la base.
-- [ ] Las pruebas exigen `TEST_DATABASE_URL` sin fallback a `DATABASE_URL`, rechazan el destino de desarrollo y limpian solo registros propios con UUIDs.
-- [ ] No se agregan tablas, columnas ni migraciones.
+- [x] `POST /api/conductores` publico crea en una transaccion `usuario` (rol `conductor`, telefono unico, PIN hasheado con bcrypt costo 12 verificable), `conductor` (`pendiente` / `no_iniciada` / `no_disponible`) y `vehiculo`; responde 201 con `ConductorDetalleDto`.
+- [x] Un fallo simulado dentro de la transaccion no deja `usuario` ni `conductor` huerfano.
+- [x] `POST` con telefono o placa ya registrados (incluso eliminados) devuelve 409 `CONFLICT` y el mensaje identifica cual campo conflicto; con ambos, identifica al menos uno.
+- [x] Body incompleto, campos desconocidos, tipos invalidos, pin que no sea numerico de 4 a 6 digitos, o capacidad fuera de 1 a 100 devuelven 400 sin escritura ni consulta.
+- [x] `GET /api/conductores` sin JWT valido devuelve 401; con JWT de conductor devuelve 403; con solo token n8n vuelve 401 y no lista.
+- [x] El listado devuelve `ListadoConductorDto[]` con el vehiculo activo, ordenado por `creadoEn` ascendente y excluyendo eliminados.
+- [x] `?estado=` con valor ajeno al enum devuelve 400; cada valor del enum filtra correctamente.
+- [x] `GET /api/conductores/:id` devuelve 200 para admin, conductor propietario y token n8n interno; 403 para conductor ajeno; 404 para inexistente, eliminado o `:id` no UUID.
+- [x] `aprobar`/`rechazar` solo desde `pendiente`; `suspender` solo desde `aprobado`; `reactivar` solo desde `suspendido`. Cualquier otra transicion devuelve 409 `INVALID_STATE_TRANSITION` con el estado actual.
+- [x] `aprobar`/`rechazar` invocan `notificarConductor()` sin efectos reales ni fallo del endpoint.
+- [x] Las transiciones requieren admin: 401 sin JWT, 403 con JWT no admin; conductor inexistente o eliminado → 404.
+- [x] `PATCH /api/conductores/:id/vehiculo` actualiza solo lo enviado, conserva los omitidos y devuelve 200 con el detalle actualizado.
+- [x] `PATCH .../vehiculo` con placa duplicada devuelve 409; body vacio o invalido devuelve 400; JWT de conductor devuelve 403; conductor sin vehiculo activo devuelve 404.
+- [x] `:id` no UUID se maneja como 404 en todos los endpoints de conductor sin consultar la base.
+- [x] Las pruebas exigen `TEST_DATABASE_URL` sin fallback a `DATABASE_URL`, rechazan el destino de desarrollo y limpian solo registros propios con UUIDs.
+- [x] No se agregan tablas, columnas ni migraciones.
 
 ## 7. Decisiones tomadas y descartadas
 
