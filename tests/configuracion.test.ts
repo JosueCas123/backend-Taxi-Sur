@@ -390,7 +390,8 @@ describe("GET y PUT /api/configuracion", () => {
       const antes = await prisma.configuracion.findUnique({ where: { id: 1 } });
       const response = await request(app).put(endpoint)
         .set("Authorization", `Bearer ${signToken(cuentas.admin.id)}`)
-        .send(body);
+        .set("Content-Type", "application/json")
+        .send(JSON.stringify(body));
       expect(response.status).toBe(400);
       expect(JSON.stringify(response.body) === JSON.stringify(validation)).toBe(true);
       const despues = await prisma.configuracion.findUnique({ where: { id: 1 } });
