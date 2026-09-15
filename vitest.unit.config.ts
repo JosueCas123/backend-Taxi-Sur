@@ -5,7 +5,7 @@ export default defineConfig({
   test: {
     ...config.test,
     globalSetup: [],
-    include: ["tests/health.test.ts", "tests/database-safety.test.ts", "tests/conductores.schema.test.ts"],
+    include: ["tests/health.test.ts", "tests/database-safety.test.ts", "tests/conductores.schema.test.ts", "tests/auth-middleware.test.ts", "tests/pasajeros.schema.test.ts", "tests/pasajeros.service.test.ts", "tests/pasajeros.http.test.ts"],
     env: { ...config.test?.env, DATABASE_URL: "", TEST_DATABASE_URL: "" },
   },
 });

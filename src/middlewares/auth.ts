@@ -95,6 +95,20 @@ export const requireAuth: RequestHandler = async (req, res, next) => {
   next();
 };
 
+export const requireN8n: RequestHandler = (req, res, next) => {
+  return requireAuth(req, res, (error) => {
+    if (error) {
+      next(error);
+      return;
+    }
+    if ((req as AuthenticatedRequest).auth?.source !== "n8n") {
+      res.status(403).json(forbidden);
+      return;
+    }
+    next();
+  });
+};
+
 export const requireAdmin: RequestHandler = async (req, res, next) => {
   const token = extractBearer(req.headers.authorization);
   if (!token) {

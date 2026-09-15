@@ -4,6 +4,7 @@ import { errorHandler, notFound } from "./middlewares/error-handler";
 import { authRouter } from "./modules/auth/auth.router";
 import { configuracionRouter } from "./modules/configuracion/configuracion.router";
 import { conductoresRouter } from "./modules/conductores/conductores.router";
+import { pasajerosRouter } from "./modules/pasajeros/pasajeros.router";
 
 const app = express();
 
@@ -17,6 +18,7 @@ app.get("/health", (_req, res) => {
 app.use("/api/auth", authRouter);
 app.use("/api/configuracion", configuracionRouter);
 app.use("/api/conductores", conductoresRouter);
+app.use("/api/pasajeros", pasajerosRouter);
 
 app.use(notFound);
 app.use(errorHandler);
