@@ -181,11 +181,14 @@ Respuesta `200`:
 | Middleware | Credencial aceptada | Protege |
 |---|---|---|
 | `requireAuth` | JWT de usuario activo (cualquier rol) **o** `X-N8N-Token` válido | Rutas de acceso interno. |
+| `requireN8n` | Solo `X-N8N-Token` válido | Rutas reservadas exclusivamente a n8n. |
 | `requireAdmin` | Solo JWT de usuario activo con rol `admin` | Rutas reservadas al administrador. |
 
 - El rol se consulta en la base en **cada** petición; un cambio de rol o un borrado lógico
   aplica de inmediato al token vigente.
 - El token n8n permite acceso interno pero **nunca** autoriza rutas de administrador.
+- `requireN8n` solo acepta el `X-N8N-Token`: un JWT válido de admin o conductor recibe `403`, y
+  un token n8n incorrecto no se rescata con un JWT válido.
 - Cuerpo no autenticado en ruta admin: `401`. Usuario activo sin rol admin en ruta admin: `403`.
 - Un fallo de PostgreSQL se responde como `500` seguro; nunca habilita acceso.
 
@@ -202,7 +205,7 @@ Todos los errores usan el mismo contrato:
 
 Códigos: `VALIDATION_ERROR` (400), `UNAUTHORIZED` (401), `FORBIDDEN` (403), `NOT_FOUND` (404),
 `CONFIGURATION_DELETED` (409), `CONFLICT` (409), `INVALID_STATE_TRANSITION` (409),
-`INTERNAL_ERROR` (500). Ningún error interno expone SQL, stack, URLs ni secretos.
+`PASAJERO_ELIMINADO` (409), `INTERNAL_ERROR` (500). Ningún error interno expone SQL, stack, URLs ni secretos.
 
 ## 7. Configuración global (SPEC 04)
 
@@ -438,7 +441,73 @@ Además de los [códigos compartidos](#formato-de-errores):
   incluso contra registros eliminados).
 - `409 INVALID_STATE_TRANSITION`: transición no permitida desde el estado actual del conductor.
 
-## 9. Pruebas
+## 9. Pasajeros (SPEC 07)
+
+`pasajeros` identifica al remitente de WhatsApp. El pasajero **no** es un `Usuario`: no tiene rol,
+PIN ni JWT. Ambos endpoints son **exclusivos de n8n** (`requireN8n`): sin credencial o con una
+inválida, `401`; un JWT válido de admin o conductor, `403`; un `X-N8N-Token` inválido tiene
+precedencia y no se rescata con un JWT válido. El contrato JSON usa **camelCase** (el roadmap
+menciona nombres SQL en snake_case en `docs/`, pero la API es camelCase).
+
+### POST /api/pasajeros/identificar
+
+Idempotente; n8n la llama en cada mensaje entrante. `whatsappId` es el `wa_id` de Meta (cadena de
+dígitos ASCII con código de país, sin `+`, espacios ni sufijos; **no** se normaliza ni se intenta
+validar contra WhatsApp). `nombre` es obligatorio y se recorta con `trim`; si el pasajero ya
+existe, se conserva su nombre registrado.
+
+```bash
+curl -X POST http://localhost:3000/api/pasajeros/identificar \
+  -H "X-N8N-Token: <N8N_API_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"whatsappId":"59170000000","nombre":"Ana Perez"}'
+```
+
+- `200` siempre, tanto al crear como al recuperar, con el `PasajeroDto`.
+- `409 PASAJERO_ELIMINADO` si el `whatsappId` pertenece a un pasajero con borrado lógico: no se
+  restaura ni se crea un duplicado.
+- Cuerpo estricto: campos faltantes, desconocidos o de tipo inválido, nombre vacío y formatos de
+  WhatsApp con `+`, espacios o sufijos devuelven `400 VALIDATION_ERROR`.
+- Dos identificaciones simultáneas del mismo `whatsappId` crean **una sola fila**; todas las
+  respuestas devuelven `200` con el mismo id del registro ganador.
+
+### PATCH /api/pasajeros/:id/aceptar-aviso
+
+Registra la **primera** aceptación del aviso de privacidad con la fecha actual del servidor; los
+reintentos y las llamadas concurrentes conservan exactamente esa fecha. Es el único mecanismo que
+fija la aceptación: identificarse **no** implica consentimiento (al crear el pasajero,
+`aceptacionAvisoPrivacidad` queda en `null`).
+
+```bash
+curl -X PATCH http://localhost:3000/api/pasajeros/<id>/aceptar-aviso \
+  -H "X-N8N-Token: <N8N_API_TOKEN>"
+```
+
+- `:id` es el `Pasajero.id` (UUID). Sin cuerpo o con `{}` es válido; `null`, arrays, fechas
+  enviadas por el cliente y campos adicionales responden `400 VALIDATION_ERROR`.
+- `200` con el `PasajeroDto` actualizado.
+- `404 NOT_FOUND` para UUID inválido, pasajero inexistente o pasajero eliminado.
+
+DTO de respuesta (ambos endpoints):
+
+```json
+{
+  "id": "UUID",
+  "whatsappId": "59170000000",
+  "nombre": "Ana Perez",
+  "aceptacionAvisoPrivacidad": "2026-09-15T12:00:00.000Z",
+  "creadoEn": "2026-09-15T12:00:00.000Z"
+}
+```
+
+`aceptacionAvisoPrivacidad` es `null` hasta la primera aceptación; las fechas son ISO 8601 en UTC.
+No se exponen `eliminadoEn` ni otras columnas.
+
+**Dependencia del módulo siguiente:** el módulo `solicitudes` (módulo 7 del roadmap, spec futura)
+deberá **rechazar la creación de una solicitud si el pasajero aún no aceptó el aviso**. Este
+módulo solo registra el consentimiento; no implementa ese bloqueo.
+
+## 10. Pruebas
 
 ```bash
 npm test            # Vitest + Supertest + integración con PostgreSQL de pruebas
@@ -454,9 +523,10 @@ la de desarrollo:
   rechaza el mismo proyecto, alias o referencias ambiguas.
 - Las migraciones existentes se aplican **solo** al destino de pruebas validado.
 - Cada suite crea y limpia únicamente sus propios registros (`spec03-<UUID>`, `spec04-<UUID>`,
-  `spec05-<UUID>`); no se hace limpieza global. No se escribe jamás en la base de desarrollo.
+  `spec05-<UUID>`, `spec07-<UUID>`); no se hace limpieza global. No se escribe jamás en la base
+  de desarrollo.
 
-## 10. Estructura del código fuente
+## 11. Estructura del código fuente
 
 ```
 backend/
@@ -474,7 +544,8 @@ backend/
 │   ├── modules/
 │   │   ├── auth/          # auth.schema / auth.service / auth.controller / auth.router
 │   │   ├── configuracion/ # configuracion.schema / .service / .controller / .router
-│   │   └── conductores/   # conductores.schema / .service / .controller / .router / notificaciones
+│   │   ├── conductores/   # conductores.schema / .service / .controller / .router / notificaciones
+│   │   └── pasajeros/     # pasajeros.schema / .service / .controller / .router
 │   ├── scripts/
 │   │   └── create-admin.ts
 │   ├── app.ts             # Express: middlewares globales y rutas (no abre puerto)
@@ -482,14 +553,14 @@ backend/
 ├── tests/
 │   ├── setup.ts           # verificación read-only e isolación del destino de pruebas
 │   ├── database-safety.ts # validación de destinos y proyectos Supabase
-│   └── *.test.ts          # health, auth, create-admin, middlewares, database, configuracion, conductores
+│   └── *.test.ts          # health, auth, create-admin, middlewares, database, configuracion, conductores, pasajeros
 ├── vitest.config.ts
 ├── vitest.unit.config.ts
 ├── tsconfig.json
 └── tsconfig.test.json
 ```
 
-## 11. Orden recomendado para construir los módulos
+## 12. Orden recomendado para construir los módulos
 
 1. **Base HTTP + Auth de administrador** — este módulo (SPEC 03).
 2. **`configuracion`** — radio de búsqueda, teléfono y nombre de empresa (SPEC 04).
@@ -503,7 +574,7 @@ backend/
 
 Cada módulo se implementa contra su spec en `specs/` y se prueba antes de pasar al siguiente.
 
-## 12. Cómo conectará n8n con esta API
+## 13. Cómo conectará n8n con esta API
 
 n8n no tendrá acceso directo a la base de datos. Llamará a endpoints REST con el header
 `X-N8N-Token` igual al secreto del `.env`, por ejemplo:
@@ -520,7 +591,7 @@ El diseño exacto de endpoints se define módulo por módulo en cada spec.
 
 ## Siguientes pasos
 
-- Verificar los criterios de aceptación de `specs/06-conductores-vehiculos.md` y, si pasan, marcarla como
-  **Implementado** antes de fusionar la rama.
+- Verificar los criterios de aceptación de `specs/06-conductores-vehiculos.md` y de
+  `specs/07-pasajeros.md` y, si pasan, marcarlas como **Implementado** antes de fusionar las ramas.
 - Crear el administrador con `npm run admin:create` antes de probar login y PUT de configuración.
-- Continuar con el módulo `pasajeros` (identificación por WhatsApp, módulo 4 del roadmap).
+- Continuar con el módulo `ubicaciones` (módulo 5 del roadmap): registro y caducidad de coordenadas.
