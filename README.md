@@ -523,7 +523,7 @@ Dos endpoints con acceso opuesto:
 
 n8n **no** tiene acceso HTTP a ninguno de los dos: en el POST recibe `403` (identidad reconocida
 sin permiso) y en el GET `401`, porque `requireAdmin` solo reconoce credenciales JWT Bearer. El
-**motor de asignación** (módulo futuro) consumirá la caducidad y la última ubicación llamando al
+**motor de asignación** (SPEC 09) consume la caducidad y la última ubicación llamando al
 **servicio interno**, nunca por HTTP. Reportar GPS no vuelve al conductor elegible ni modifica su
 jornada o disponibilidad.
 
@@ -586,7 +586,87 @@ La vigencia se implementa una sola vez como función pura reutilizable
 `esTemporalmenteValida(horaRegistro, now)`, que el motor de asignación usará sin duplicar la
 Regla 9.
 
-## 11. Pruebas
+## 11. Motor de asignación (SPEC 09)
+
+El **motor de asignación** selecciona los conductores elegibles más cercanos al punto de recogida
+de una solicitud aplicando las Reglas 2, 3 y 4. El módulo **solo lee y calcula**: no cambia
+estados de la solicitud ni del conductor (el ciclo de vida pertenece al módulo 7,
+`specs/10-solicitudes`). Se expone bajo la ruta de `solicitudes` pero con un servicio interno
+propio (`motor-asignacion.service.ts`) que el módulo 7 reutilizará.
+
+La Regla 2 filtra por estado `aprobado`, jornada `activa`, disponibilidad `disponible` (que ya
+excluye `solicitud_pendiente` y `en_servicio`), sin borrado lógico, con ubicación vigente y
+vehículo activo. La Regla 3 limita al radio configurado y la Regla 4 devuelve los tres más
+cercanos.
+
+### GET /api/solicitudes/:id/candidatos
+
+Endpoint **exclusivo de n8n** (`requireN8n`): solo el `X-N8N-Token` válido es aceptado. Un JWT
+válido de admin o conductor recibe `403 FORBIDDEN`; sin credencial o con token inválido, `401
+UNAUTHORIZED`. La autorización ocurre antes de validar el recurso y no se registran tokens ni
+cuerpos en logs.
+
+```bash
+curl http://localhost:3000/api/solicitudes/<id>/candidatos \
+  -H "X-N8N-Token: <N8N_API_TOKEN>"
+```
+
+- `:id` es el `Solicitud.id` (UUID). Un UUID inválido responde `404 NOT_FOUND` sin consultar el
+  servicio.
+- La solicitud debe existir y no estar eliminada lógicamente; en caso contrario, `404 NOT_FOUND`.
+  **No se valida el estado de la solicitud**: el control de transiciones pertenece al módulo 7.
+- Se lee `configuracion.radioMaximoBusquedaKm` (fila `id = 1`); si la fila no existe o está
+  eliminada se usa el default documentado de `5` km.
+- Solo son candidatos los conductores `aprobado` + `activa` + `disponible` + no eliminados, con su
+  última ubicación (`horaRegistro DESC, id DESC`, `esValida` persistida en `true`) y su vehículo
+  activo más reciente (`creadoEn DESC`).
+- La última ubicación debe además pasar la **caducidad de 5 minutos de la Regla 9**, reutilizando
+  `esTemporalmenteValida(horaRegistro, now)` de `ubicaciones.service` (límite inclusivo de
+  `300000` ms; sin duplicar la lógica).
+- Se conservan solo los conductores cuya distancia Haversine (radio terrestre 6371 km) sea
+  `<= radioMaximoBusquedaKm` (exactamente igual al radio es elegible) y se devuelven como máximo
+  los **3 más cercanos**, ordenados por distancia ascendente.
+- Sin candidatos elegibles: `200` con `{ "candidatos": [] }`. La decisión de pasar la solicitud a
+  `sin_conductor` es del módulo 7.
+
+Respuesta `200` (DTO estricto `CandidatosDto`):
+
+```json
+{
+  "candidatos": [
+    {
+      "conductorId": "uuid",
+      "nombreCompleto": "Juan Perez",
+      "distanciaKm": 2.35,
+      "vehiculo": {
+        "placa": "1234ABC",
+        "marca": "Toyota",
+        "modelo": "Corolla",
+        "color": "Blanco",
+        "capacidadPasajeros": 4
+      }
+    }
+  ]
+}
+```
+
+- `distanciaKm` usa Haversine y se redondea a 2 decimales (referencia para el pasajero; la
+  distancia exacta no es operativa). La función pura `distanciaKm()` está exportada y testeable.
+- Se expone la `placa` del vehículo activo más reciente: el pasajero la ve desde la selección de
+  candidatos (Regla 4).
+- No se exponen `creadoEn`, `eliminadoEn`, `usuarioId` ni el id del vehículo; este DTO no lleva
+  fechas.
+
+Códigos de error:
+
+| HTTP | Código | Situación |
+|---|---|---|
+| 401 | `UNAUTHORIZED` | Credenciales ausentes o inválidas |
+| 403 | `FORBIDDEN` | JWT válido sin permiso para el recurso |
+| 404 | `NOT_FOUND` | UUID inválido, solicitud inexistente o eliminada |
+| 500 | `INTERNAL_ERROR` | Fallo inesperado, sin filtrar SQL, stack ni secretos |
+
+## 12. Pruebas
 
 ```bash
 npm test            # Vitest + Supertest + integración con PostgreSQL de pruebas
@@ -602,10 +682,10 @@ la de desarrollo:
   rechaza el mismo proyecto, alias o referencias ambiguas.
 - Las migraciones existentes se aplican **solo** al destino de pruebas validado.
 - Cada suite crea y limpia únicamente sus propios registros (`spec03-<UUID>`, `spec04-<UUID>`,
-  `spec05-<UUID>`, `spec07-<UUID>`, `spec08-<UUID>`); no se hace limpieza global. No se escribe
-  jamás en la base de desarrollo.
+  `spec05-<UUID>`, `spec07-<UUID>`, `spec08-<UUID>`, `spec09-<UUID>`); no se hace limpieza
+  global. No se escribe jamás en la base de desarrollo.
 
-## 12. Estructura del código fuente
+## 13. Estructura del código fuente
 
 ```
 backend/
@@ -625,7 +705,8 @@ backend/
 │   │   ├── configuracion/ # configuracion.schema / .service / .controller / .router
 │   │   ├── conductores/   # conductores.schema / .service / .controller / .router / notificaciones
 │   │   ├── pasajeros/     # pasajeros.schema / .service / .controller / .router
-│   │   └── ubicaciones/   # ubicaciones.schema / .service / .controller / .router
+│   │   ├── ubicaciones/   # ubicaciones.schema / .service / .controller / .router
+│   │   └── motor-asignacion/ # motor-asignacion.schema / .service / .controller / .router
 │   ├── scripts/
 │   │   └── create-admin.ts
 │   ├── app.ts             # Express: middlewares globales y rutas (no abre puerto)
@@ -633,14 +714,14 @@ backend/
 ├── tests/
 │   ├── setup.ts           # verificación read-only e isolación del destino de pruebas
 │   ├── database-safety.ts # validación de destinos y proyectos Supabase
-│   └── *.test.ts          # health, auth, create-admin, middlewares, database, configuracion, conductores, pasajeros, ubicaciones
+│   └── *.test.ts          # health, auth, create-admin, middlewares, database, configuracion, conductores, pasajeros, ubicaciones, motor-asignacion
 ├── vitest.config.ts
 ├── vitest.unit.config.ts
 ├── tsconfig.json
 └── tsconfig.test.json
 ```
 
-## 13. Orden recomendado para construir los módulos
+## 14. Orden recomendado para construir los módulos
 
 1. **Base HTTP + Auth de administrador** — este módulo (SPEC 03).
 2. **`configuracion`** — radio de búsqueda, teléfono y nombre de empresa (SPEC 04).
@@ -654,7 +735,7 @@ backend/
 
 Cada módulo se implementa contra su spec en `specs/` y se prueba antes de pasar al siguiente.
 
-## 14. Cómo conectará n8n con esta API
+## 15. Cómo conectará n8n con esta API
 
 n8n no tendrá acceso directo a la base de datos. Llamará a endpoints REST con el header
 `X-N8N-Token` igual al secreto del `.env`, por ejemplo:
@@ -671,8 +752,8 @@ El diseño exacto de endpoints se define módulo por módulo en cada spec.
 
 ## Siguientes pasos
 
-- Verificar los criterios de aceptación de `specs/08-ubicaciones.md` y, si pasan, marcarla como
-  **Implementado** antes de fusionar la rama.
+- Verificar los criterios de aceptación de `specs/09-motor-asignacion.md` y, si pasan, marcarla
+  como **Implementado** antes de fusionar la rama.
 - Crear el administrador con `npm run admin:create` antes de probar login y PUT de configuración.
-- Continuar con el módulo `motor-asignacion` (módulo 6 del roadmap): selección de candidatos más
-  cercanos con la Regla 9 reutilizando `esTemporalmenteValida`.
+- Continuar con el módulo `solicitudes` (módulo 7 del roadmap): ciclo de vida completo de la
+  solicitud, que reutilizará `obtenerCandidatos` por servicio interno sin exponer admin.
