@@ -4,7 +4,7 @@ import type { PrismaClient } from "@prisma/client";
 import { afterAll, afterEach, beforeAll, describe, expect, inject, it, vi } from "vitest";
 import app from "../src/app";
 import { candidatosDtoSchema } from "../src/modules/motor-asignacion/motor-asignacion.schema";
-import { distanciaKm } from "../src/modules/motor-asignacion/motor-asignacion.service";
+import { distanciaKm, obtenerCandidatos } from "../src/modules/motor-asignacion/motor-asignacion.service";
 
 type EstadoConductor = "pendiente" | "aprobado" | "rechazado" | "suspendido";
 type EstadoJornada = "no_iniciada" | "activa" | "finalizada";
@@ -256,5 +256,51 @@ describe("GET /api/solicitudes/:id/candidatos (integracion real)", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe("obtenerCandidatos con excluirIds (integracion real)", () => {
+  it("sin lista devuelve el top 3 habitual", async () => {
+    const result = await obtenerCandidatos(solicitudId, new Date());
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.candidatos.map(({ conductorId }) => conductorId)).toEqual([c1, c2, c3]);
+    }
+  });
+
+  it("excluye al mejor candidato y el siguiente sube de posicion", async () => {
+    const result = await obtenerCandidatos(solicitudId, new Date(), [c1]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const ids = result.candidatos.map(({ conductorId }) => conductorId);
+      expect(ids).not.toContain(c1);
+      expect(ids).toEqual([c2, c3, c4]);
+    }
+  });
+
+  it("excluye a varios y conserva el top 3 entre los restantes", async () => {
+    const result = await obtenerCandidatos(solicitudId, new Date(), [c1, c2, c3]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const ids = result.candidatos.map(({ conductorId }) => conductorId);
+      expect(ids).toEqual([c4]);
+    }
+  });
+
+  it("excluir a todos los conductores devuelve lista vacia", async () => {
+    const todos = [
+      c1, c2, c3, c4, cCaducado, cFueraRadio, cNoDisponible,
+      cJornadaFinalizada, cPendiente, cSuspendido, cEliminado, cSinVehiculo,
+    ];
+    const result = await obtenerCandidatos(solicitudId, new Date(), todos);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.candidatos).toEqual([]);
+    }
+  });
+
+  it("solicitud inexistente con lista de exclusion devuelve NOT_FOUND", async () => {
+    const result = await obtenerCandidatos("00000000-0000-0000-0000-000000000000", new Date(), [c1]);
+    expect(result).toEqual({ ok: false, code: "NOT_FOUND" });
   });
 });

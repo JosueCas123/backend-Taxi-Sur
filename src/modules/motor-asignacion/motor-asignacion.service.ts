@@ -70,6 +70,7 @@ function aCandidatoDto(conductor: CandidatosConductor, distancia: number): Candi
 export async function obtenerCandidatos(
   solicitudId: string,
   now: Date | number,
+  excluirIds: string[] = [],
 ): Promise<ObtenerCandidatosResult> {
   const solicitud = await prisma.solicitud.findFirst({
     where: { id: solicitudId, eliminadoEn: null },
@@ -83,6 +84,14 @@ export async function obtenerCandidatos(
   });
   const radioMaximoKm = configuracion?.radioMaximoBusquedaKm ?? RADIO_MAXIMO_DEFAULT_KM;
 
+  // Regla 7/8: los conductores que rechazaron o expiraron en esta solicitud
+  // quedan fuera de las re-busquedas (la tabla es fuente de trazabilidad).
+  const rechazados = await prisma.solicitudConductorRechazado.findMany({
+    where: { solicitudId },
+    select: { conductorId: true },
+  });
+  const excluidos = Array.from(new Set([...excluirIds, ...rechazados.map(({ conductorId }) => conductorId)]));
+
   const conductores = await prisma.conductor.findMany({
     where: {
       estado: "aprobado",
@@ -90,6 +99,7 @@ export async function obtenerCandidatos(
       estadoDisponibilidad: "disponible",
       eliminadoEn: null,
       vehiculos: { some: { eliminadoEn: null } },
+      ...(excluidos.length > 0 ? { id: { notIn: excluidos } } : {}),
     },
     select: candidatosConductorSelect,
   });

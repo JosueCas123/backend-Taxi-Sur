@@ -4,7 +4,7 @@ import request from "supertest";
 import { beforeEach, expect, it, vi } from "vitest";
 import { env } from "../src/config/env";
 import { prisma } from "../src/config/prisma";
-import { requireAdmin, requireAuth, requireN8n, type AuthenticatedRequest } from "../src/middlewares/auth";
+import { requireAdmin, requireAuth, requireN8n, requireN8nOrAdmin, type AuthenticatedRequest } from "../src/middlewares/auth";
 import { errorHandler } from "../src/middlewares/error-handler";
 
 vi.mock("../src/config/env", () => ({
@@ -25,7 +25,7 @@ const forbidden = { error: { code: "FORBIDDEN", message: "Permiso denegado" } };
 
 const app = express();
 for (const [path, guard] of [
-  ["/n8n", requireN8n], ["/auth", requireAuth], ["/admin", requireAdmin],
+  ["/n8n", requireN8n], ["/auth", requireAuth], ["/admin", requireAdmin], ["/n8n-admin", requireN8nOrAdmin],
 ] as const) {
   app.get(path, guard, (req, res) => res.json((req as AuthenticatedRequest).auth));
 }
@@ -94,7 +94,7 @@ it.each([null, { id: userId, rol: "admin", eliminadoEn: new Date() }])(
   },
 );
 
-it.each(["/n8n", "/auth", "/admin"])("%s: fallo de persistencia se propaga como 500 seguro", async (path) => {
+it.each(["/n8n", "/auth", "/admin", "/n8n-admin"])("%s: fallo de persistencia se propaga como 500 seguro", async (path) => {
   lookup.mockRejectedValueOnce(new Error("SQL connection secret stack"));
   const response = await request(app).get(path).set("Authorization", `Bearer ${token()}`);
   expect(response.status).toBe(500);
@@ -120,4 +120,37 @@ it("guards existentes conservan permisos del token n8n", async () => {
   expect(admin.status).toBe(401);
   expect(admin.body).toEqual(unauthorized);
   expect(lookup).not.toHaveBeenCalled();
+});
+
+it("requireN8nOrAdmin: token n8n valido permite acceso sin consultar usuarios", async () => {
+  const response = await request(app).get("/n8n-admin").set("X-N8N-Token", env.N8N_API_TOKEN);
+  expect(response.status).toBe(200);
+  expect(response.body).toEqual({ source: "n8n", userId: null, rol: null });
+  expect(lookup).not.toHaveBeenCalled();
+});
+
+it.each([
+  {},
+  { "X-N8N-Token": "wrong-n8n-token" },
+  { Authorization: "Bearer invalid" },
+  { Authorization: "Basic invalid" },
+])("requireN8nOrAdmin: credenciales ausentes o invalidas reciben 401 (%j)", async (headers) => {
+  const response = await request(app).get("/n8n-admin").set(headers);
+  expect(response.status).toBe(401);
+  expect(response.body).toEqual(unauthorized);
+  expect(lookup).not.toHaveBeenCalled();
+});
+
+it("requireN8nOrAdmin: JWT de admin permite acceso", async () => {
+  lookup.mockResolvedValue({ id: userId, rol: "admin", eliminadoEn: null } as Awaited<ReturnType<typeof prisma.usuario.findUnique>>);
+  const response = await request(app).get("/n8n-admin").set("Authorization", `Bearer ${token()}`);
+  expect(response.status).toBe(200);
+  expect(response.body).toEqual({ source: "jwt", userId, rol: "admin" });
+});
+
+it("requireN8nOrAdmin: JWT de conductor recibe 403", async () => {
+  lookup.mockResolvedValue({ id: userId, rol: "conductor", eliminadoEn: null } as Awaited<ReturnType<typeof prisma.usuario.findUnique>>);
+  const response = await request(app).get("/n8n-admin").set("Authorization", `Bearer ${token()}`);
+  expect(response.status).toBe(403);
+  expect(response.body).toEqual(forbidden);
 });

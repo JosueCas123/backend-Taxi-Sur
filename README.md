@@ -55,9 +55,11 @@ npm run prisma:studio
 ## 3. Base de datos y migraciones
 
 El esquema está en `prisma/schema.prisma` (`configuracion`, `usuarios`, `conductores`,
-`vehiculos`, `pasajeros`, `ubicaciones_conductor`, `solicitudes`, `tarifas`, con `eliminado_en`
-para soft delete). La URL de conexión vive en `prisma.config.ts`, no en el datasource del
-schema (Prisma 7).
+`vehiculos`, `pasajeros`, `ubicaciones_conductor`, `solicitudes`, `solicitudes_conductores_rechazados`,
+`tarifas`, con `eliminado_en` para soft delete). `solicitudes_conductores_rechazados` (Reglas 7 y 8)
+es un registro histórico de exclusiones y no tiene borrado lógico; su `motivo` usa el enum
+`MotivoExclusionSolicitud` (`rechazo` | `expiracion`). La URL de conexión vive en `prisma.config.ts`,
+no en el datasource del schema (Prisma 7).
 
 ```bash
 npx prisma validate
@@ -182,6 +184,7 @@ Respuesta `200`:
 |---|---|---|
 | `requireAuth` | JWT de usuario activo (cualquier rol) **o** `X-N8N-Token` válido | Rutas de acceso interno. |
 | `requireN8n` | Solo `X-N8N-Token` válido | Rutas reservadas exclusivamente a n8n. |
+| `requireN8nOrAdmin` | `X-N8N-Token` válido **o** JWT de usuario activo con rol `admin` | Rutas compartidas solo entre n8n y admin (p. ej. `GET /api/solicitudes/:id`). |
 | `requireAdmin` | Solo JWT de usuario activo con rol `admin` | Rutas reservadas al administrador. |
 
 - El rol se consulta en la base en **cada** petición; un cambio de rol o un borrado lógico
@@ -599,6 +602,12 @@ excluye `solicitud_pendiente` y `en_servicio`), sin borrado lógico, con ubicaci
 vehículo activo. La Regla 3 limita al radio configurado y la Regla 4 devuelve los tres más
 cercanos.
 
+El módulo 7 (`10-solicitudes.md`) extendió el servicio: el tercer parámetro opcional `excluirIds`
+descarta conductores explícitos y, para la **re-búsqueda** de una solicitud ya reservada, el
+servicio excluye automáticamente a los conductores registrados en `solicitudes_conductores_rechazados`
+(Reglas 7 y 8) — tanto `seleccionar-conductor` como `GET /:id/candidatos` usan ese mismo cálculo, así
+que quien rechazó o expiró no vuelve a aparecer como candidato de la misma solicitud.
+
 ### GET /api/solicitudes/:id/candidatos
 
 Endpoint **exclusivo de n8n** (`requireN8n`): solo el `X-N8N-Token` válido es aceptado. Un JWT
@@ -666,7 +675,248 @@ Códigos de error:
 | 404 | `NOT_FOUND` | UUID inválido, solicitud inexistente o eliminada |
 | 500 | `INTERNAL_ERROR` | Fallo inesperado, sin filtrar SQL, stack ni secretos |
 
-## 12. Pruebas
+## 12. Solicitudes (SPEC 10)
+
+`solicitudes` modela el **ciclo de vida completo** de una solicitud de taxi. El módulo aplica las
+Reglas 1 (una solicitud activa por pasajero), 5 (reserva temporal), 6 (1 minuto para responder),
+7 (rechazo), 8 (expiracion), 10 (solo el conductor finaliza) y 11 (jornada al finalizar). La
+solicitud se crea directamente en `buscando`; los estados intermedios `creada`,
+`conductor_seleccionado` y `aceptada` del enum se conservan por fidelidad del modelo pero **no se
+persisten** como paso separado en el MVP. `rechazada` y `expirada` tampoco: esos eventos se
+registran en la tabla de rechazos (ver abajo).
+
+Transiciones implementadas:
+
+```
+buscando
+    ├─ seleccionar-conductor ─────────────────────► esperando_respuesta (+ expiraEn = now + 60s)
+    │      └─ job interno (expiraEn <= now) ──────────►  buscando  (exclusion "expiracion")
+    │      └─ responder {acepta:false} ────────────────►  buscando  (exclusion "rechazo")
+    │      └─ responder {acepta:true} ─────────────────►  en_servicio
+    │      └─ sin-conductor (n8n) ─────────────────────►  sin_conductor
+en_servicio
+    └─ finalizar (conductor asignado) ───────────────►  finalizada
+```
+
+### 12.1. Trazabilidad de rechazos y expiraciones — `solicitudes_conductores_rechazados`
+
+Alguien que **rechazó** (`responder {acepta:false}`) o que **expiró** (no respondió en 60 s) queda
+registrado en la tabla `solicitudes_conductores_rechazados`:
+
+| Columna | Valor |
+|---|---|
+| `solicitudId` | La solicitud afectada |
+| `conductorId` | El conductor que rechazó o expiró |
+| `motivo` | `rechazo` o `expiracion` (enum `MotivoExclusionSolicitud`) |
+| `creadoEn` | Momento del evento (reloj del servidor) |
+
+- `@@unique([solicitudId, conductorId])`: un conductor se registra una sola vez por solicitud.
+- La exclusión es **por solicitud**: el conductor queda `disponible` (se libera) y seguirá siendo
+  candidato en solicitudes futuras, pero `obtenerCandidatos` lo descarta en la re-búsqueda de esta.
+- El registro es **histórico** (sin borrado lógico) y se conserva aunque la solicitud termine en
+  `finalizada` o `sin_conductor`: es la fuente de trazabilidad y reportes ("qué solicitudes
+  rechazaron/expiraron, cuándo y quién").
+
+Además, la migración agregó el índice compuesto `@@index([estado, expiraEn])` en `Solicitud` para
+el barrido de expiración y el futuro dashboard del módulo 8.
+
+### 12.2. Autorización
+
+| Endpoint | Credencial aceptada | Consecuencia de otras |
+|---|---|---|
+| `POST /api/solicitudes` | n8n | Admin/conductor (JWT): `403`. Sin credencial/token inválido: `401`. |
+| `POST /:id/seleccionar-conductor` | n8n | Admin/conductor (JWT): `403`. Sin credencial: `401`. |
+| `POST /:id/sin-conductor` | n8n | Admin/conductor (JWT): `403`. Sin credencial: `401`. |
+| `GET /:id` | n8n **o** admin (`requireN8nOrAdmin`) | Conductor (JWT): `403`. Sin credencial: `401`. |
+| `POST /:id/responder` | Conductor asignado (`requireAuth` + propietario en el servicio) | Admin, n8n u otro conductor: `403`. Sin credencial: `401`. |
+| `POST /:id/finalizar` | Conductor asignado (`requireAuth` + propietario en el servicio) | Admin, n8n u otro conductor: `403`. Sin credencial: `401`. |
+
+- La autorización ocurre **antes** de validar recurso y cuerpo. En `responder`/`finalizar` la
+  solicitud se carga **antes** de verificar la propiedad: recurso inexistente/eliminado → `404`, y
+  solo después, conductor distinto del asignado → `403` sin revelar datos.
+
+### 12.3. POST /api/solicitudes — crear (n8n)
+
+```bash
+curl -X POST http://localhost:3000/api/solicitudes \
+  -H "X-N8N-Token: <N8N_API_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "pasajeroId": "d9428888-122b-4e1f-b85c-61cd3cbb3210",
+    "latitudRecogida": -17.7833,
+    "longitudRecogida": -63.1821,
+    "destino": "Plaza 24 de Septiembre"
+  }'
+```
+
+- `pasajeroId` UUID válido; `latitudRecogida` `[-90, 90]`; `longitudRecogida` `[-180, 180]`;
+  `destino` opcional (1–255, recortado). Cuerpo estricto (Zod `.strict()`).
+- `201` con el `SolicitudDto` en `buscando`, sin conductor asignado ni `expiraEn`.
+- Pasajero inexistente o eliminado: `404 NOT_FOUND`. Sin aviso de privacidad aceptado (dependencia
+  de SPEC 07): `409 AVISO_NO_ACEPTADO`. Pasajero con solicitud activa (Regla 1): `409
+  SOLICITUD_ACTIVA` sin generar fila nueva (validación + creación atómicas).
+
+Tras crear, n8n consulta `GET /:id/candidatos` (SPEC 09) para presentar los tres conductores; si no
+hay candidatos, llama a `POST /:id/sin-conductor`.
+
+### 12.4. POST /api/solicitudes/:id/seleccionar-conductor — reservar (n8n)
+
+```bash
+curl -X POST http://localhost:3000/api/solicitudes/<id>/seleccionar-conductor \
+  -H "X-N8N-Token: <N8N_API_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"conductorId": "8e7acf6d-0e5b-4e6a-9f2a-1c2b3d4e5f60"}'
+```
+
+- `conductorId` UUID válido. `:id` no UUID resuelve `404` sin consultar el servicio.
+- Reutiliza `obtenerCandidatos()` (SPEC 09) con la exclusión de rechazados (Regla 7/8): si el
+  conductor no está entre los candidatos actuales → `409 CANDIDATO_INVALIDO` sin reservar.
+- Solicitud no en `buscando`: `409 ESTADO_INVALIDO`.
+- Reserva atómica: conductor `disponible` → `solicitud_pendiente`, solicitud →
+  `esperando_respuesta` con `conductorAsignadoId` fijado y `expiraEn = now + 60000` (Reglas 5 y 6).
+  Si el conductor ya no está `disponible` (carrera con otra solicitud) → `409 CANDIDATO_INVALIDO`.
+- Agenda el `setTimeout` de expiración (Regla 8). `200` con el `SolicitudDto`.
+
+### 12.5. POST /api/solicitudes/:id/responder — aceptar o rechazar (conductor)
+
+```bash
+curl -X POST http://localhost:3000/api/solicitudes/<id>/responder \
+  -H "Authorization: Bearer <JWT-del-conductor-asignado>" \
+  -H "Content-Type: application/json" \
+  -d '{"acepta": true}'
+```
+
+- `acepta` booleano **estricto** (`true`/`false`, no strings).
+- `401` sin credencial; `403` para admin, n8n u otro conductor; `404` si la solicitud no existe o
+  está eliminada (el recurso se carga antes que la propiedad).
+- Solicitud no en `esperando_respuesta`: `409 ESTADO_INVALIDO`.
+- `acepta:true` → `en_servicio`, `aceptadaEn = now`, `expiraEn = null`, conductor →
+  `en_servicio`, y se llama al stub `notificarPasajero` con los datos del vehículo (ver 12.9).
+- `acepta:false` → registra `solicitudes_conductores_rechazados` (motivo `rechazo`), libera al
+  conductor (`disponible`) y la solicitud vuelve a `buscando` con `conductorAsignadoId`/`expiraEn`
+  nulos. El conductor **no reaparece** en la re-búsqueda de esta solicitud (Regla 7).
+- La transición es condicional y atómica (exige `esperando_respuesta` en el `update`).
+
+### 12.6. Job interno de expiración (Regla 8, no HTTP)
+
+Programado por `setTimeout` por solicitud (`.unref()`, no bloquea el cierre), más un `barridoInicial`
+al iniciar el servidor que expira las ya vencidas y reprograma las pendientes tras un reinicio.
+
+- `programarExpiracion(solicitudId, expiraEn)` → timer que ejecuta `expirarSiVencida` al vencerse.
+- `expirarSiVencida(solicitudId)`: actualización condicional sobre solicitudes `esperando_respuesta`
+  con `expiraEn <= now` (límite **inclusivo**, consistente con SPEC 08/09) → `buscando`, registra la
+  exclusión (motivo `expiracion`), libera al conductor (`disponible`) y cancela el timer. Si la fila
+  ya cambió de estado, no hace nada: es **idempotente** y ninguna solicitud se expira dos veces.
+- `cancelarExpiracion(solicitudId)`: se invoca al responder (acepta/rechaza) y al finalizar para no
+  agendar callbacks obsoletos.
+- `barridoInicial()`: se ejecuta en `src/server.ts` tras conectar con PostgreSQL.
+
+### 12.7. POST /api/solicitudes/:id/finalizar — finalizar servicio (conductor)
+
+Sin cuerpo (o `{}`). Solo el **conductor asignado** del servicio **`en_servicio`** (Regla 10).
+
+```bash
+curl -X POST http://localhost:3000/api/solicitudes/<id>/finalizar \
+  -H "Authorization: Bearer <JWT-del-conductor-asignado>" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+- `200` con el `SolicitudDto`: `finalizada`, `finalizadaEn = now`.
+- Libera al conductor según la Regla 11: jornada `activa` → `disponible`; si no → `no_disponible`.
+- Permisos y orden `404`/`403` idénticos a `responder`; `409 ESTADO_INVALIDO` desde otro estado.
+
+### 12.8. POST /api/solicitudes/:id/sin-conductor — sin candidatos (n8n)
+
+Sin cuerpo (o `{}`). n8n lo llama cuando `GET /:id/candidatos` devuelve `candidatos: []`. Solo desde
+`buscando` (`409 ESTADO_INVALIDO` en otro estado); actualización condicional →
+`sin_conductor`, limpiando `conductorAsignadoId` y `expiraEn`.
+
+```bash
+curl -X POST http://localhost:3000/api/solicitudes/<id>/sin-conductor \
+  -H "X-N8N-Token: <N8N_API_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+### 12.9. GET /api/solicitudes/:id — detalle (n8n o admin) y polling
+
+`requireN8nOrAdmin`: n8n **o** admin; un JWT de conductor (aunque sea el asignado) recibe `403`.
+`404` para UUID inválido (sin consultar) o solicitud inexistente/eliminada.
+
+```bash
+curl http://localhost:3000/api/solicitudes/<id> \
+  -H "X-N8N-Token: <N8N_API_TOKEN>"
+```
+
+Responde `SolicitudDetalleDto` (el `SolicitudDto` más `pasajero` y `conductorAsignado`):
+
+```json
+{
+  "id": "7a1f2c4e-0000-4000-8000-000000000000",
+  "pasajeroId": "d9428888-122b-4e1f-b85c-61cd3cbb3210",
+  "conductorAsignadoId": "8e7acf6d-0e5b-4e6a-9f2a-1c2b3d4e5f60",
+  "estado": "en_servicio",
+  "latitudRecogida": -17.7833,
+  "longitudRecogida": -63.1821,
+  "destino": "Plaza 24 de Septiembre",
+  "expiraEn": null,
+  "aceptadaEn": "2026-09-16T12:01:00.000Z",
+  "finalizadaEn": null,
+  "creadoEn": "2026-09-16T12:00:00.000Z",
+  "pasajero": { "id": "d9428888-122b-4e1f-b85c-61cd3cbb3210", "nombre": "Ana Perez" },
+  "conductorAsignado": {
+    "id": "8e7acf6d-0e5b-4e6a-9f2a-1c2b3d4e5f60",
+    "nombreCompleto": "Juan Perez",
+    "vehiculo": { "placa": "1234ABC", "marca": "Toyota", "modelo": "Corolla", "color": "Blanco", "capacidadPasajeros": 4 }
+  }
+}
+```
+
+- `pasajero` siempre presente; `conductorAsignado` (y su `vehiculo`) es `null` hasta que alguien
+  reserve. `vehiculo` es el activo más reciente.
+- **No se incluye el `telefono` del conductor en ningún DTO**: el pasajero no debe recibir el número
+  directo y n8n no debe poder reenviarlo sin filtrar; el admin lo obtiene por el módulo de
+  conductores (`GET /api/conductores/:id`). El pasajero ve la `placa` (Regla 4) y recibe los datos
+  del vehículo al aceptar.
+- Fechas ISO 8601 en UTC; no se exponen `usuarioId`, `eliminadoEn` ni datos internos.
+
+**Cómo se entera n8n de los cambios de estado:** n8n **consulta `GET /:id` por polling** mientras la
+solicitud esté activa (`buscando`, `esperando_respuesta`, `en_servicio`), con un intervalo sugerido
+**~5 segundos**. El job de expiración garantiza que `esperando_respuesta` siempre termina en 60
+segundos, así el polling converge. Guía por estado observado:
+
+| n8n ve en `GET /:id` | Acción de n8n |
+|---|---|
+| `buscando` (tras rechazo o expiración) | Consultar `GET /:id/candidatos` y ofrecer los nuevos candidatos (la tabla de rechazos excluye a quien rechazó/expiró). |
+| `en_servicio` | Informar al pasajero los datos del vehículo del conductor asignado desde el detalle. |
+| `sin_conductor` | Informar que no hay conductores disponibles y ofrecer el teléfono del centro de atención. |
+| `finalizada` | Cerrar el hilo conversacional. |
+
+Webhook del backend hacia n8n y suscripción Realtime quedan diferidos como mejora post-MVP.
+
+### 12.10. DTOs y códigos de error
+
+`SolicitudDto` (crear, seleccionar, responder, finalizar, sin-conductor) y el `SolicitudDetalleDto`
+anterior son DTOs estrictos (Zod `.strict()`): campos desconocidos quedan descartados; `destino`,
+`expiraEn`, `aceptadaEn` y `finalizadaEn` pueden ser `null`.
+
+| HTTP | Código | Situación |
+|---|---|---|
+| 400 | `VALIDATION_ERROR` | Cuerpo que no cumple el contrato |
+| 401 | `UNAUTHORIZED` | Credenciales ausentes o inválidas |
+| 403 | `FORBIDDEN` | Identidad válida sin permiso para el recurso |
+| 404 | `NOT_FOUND` | UUID inválido, solicitud/pasajero inexistente o eliminado |
+| 409 | `SOLICITUD_ACTIVA` | El pasajero ya tiene una solicitud activa (Regla 1) |
+| 409 | `AVISO_NO_ACEPTADO` | El pasajero no aceptó el aviso de privacidad (SPEC 07) |
+| 409 | `ESTADO_INVALIDO` | Transición no permitida desde el estado actual |
+| 409 | `CANDIDATO_INVALIDO` | El conductor no es candidato elegible o ya no está disponible |
+| 500 | `INTERNAL_ERROR` | Fallo inesperado, sin filtrar SQL, stack ni secretos |
+
+El stub `notificarPasajero(pasajeroId, {solicitudId, conductorNombre, placa})` (SPEC 06, módulo 3)
+no persiste ni hace fallar el endpoint; las notificaciones reales (push/WhatsApp) quedan post-MVP.
+
+## 13. Pruebas
 
 ```bash
 npm test            # Vitest + Supertest + integración con PostgreSQL de pruebas
@@ -682,10 +932,11 @@ la de desarrollo:
   rechaza el mismo proyecto, alias o referencias ambiguas.
 - Las migraciones existentes se aplican **solo** al destino de pruebas validado.
 - Cada suite crea y limpia únicamente sus propios registros (`spec03-<UUID>`, `spec04-<UUID>`,
-  `spec05-<UUID>`, `spec07-<UUID>`, `spec08-<UUID>`, `spec09-<UUID>`); no se hace limpieza
-  global. No se escribe jamás en la base de desarrollo.
+  `spec05-<UUID>`, `spec07-<UUID>`, `spec08-<UUID>`, `spec09-<UUID>`, y `sp10-<UUID>` en
+  `tests/solicitudes.test.ts`); no se hace limpieza global. No se escribe jamás en la base de
+  desarrollo.
 
-## 13. Estructura del código fuente
+## 14. Estructura del código fuente
 
 ```
 backend/
@@ -698,7 +949,7 @@ backend/
 │   │   ├── env.ts         # variables de entorno validadas con Zod
 │   │   └── prisma.ts      # instancia runtime Prisma 7 con adaptador PostgreSQL
 │   ├── middlewares/
-│   │   ├── auth.ts        # requireAuth (JWT/n8n) y requireAdmin
+│   │   ├── auth.ts        # requireAuth (JWT/n8n), requireN8n, requireN8nOrAdmin y requireAdmin
 │   │   └── error-handler.ts
 │   ├── modules/
 │   │   ├── auth/          # auth.schema / auth.service / auth.controller / auth.router
@@ -706,7 +957,8 @@ backend/
 │   │   ├── conductores/   # conductores.schema / .service / .controller / .router / notificaciones
 │   │   ├── pasajeros/     # pasajeros.schema / .service / .controller / .router
 │   │   ├── ubicaciones/   # ubicaciones.schema / .service / .controller / .router
-│   │   └── motor-asignacion/ # motor-asignacion.schema / .service / .controller / .router
+│   │   ├── motor-asignacion/ # motor-asignacion.schema / .service / .controller / .router
+│   │   └── solicitudes/   # solicitudes.schema / .service / .controller / .router / notificaciones
 │   ├── scripts/
 │   │   └── create-admin.ts
 │   ├── app.ts             # Express: middlewares globales y rutas (no abre puerto)
@@ -714,14 +966,14 @@ backend/
 ├── tests/
 │   ├── setup.ts           # verificación read-only e isolación del destino de pruebas
 │   ├── database-safety.ts # validación de destinos y proyectos Supabase
-│   └── *.test.ts          # health, auth, create-admin, middlewares, database, configuracion, conductores, pasajeros, ubicaciones, motor-asignacion
+│   └── *.test.ts          # health, auth, create-admin, middlewares, database, configuracion, conductores, pasajeros, ubicaciones, motor-asignacion, solicitudes
 ├── vitest.config.ts
 ├── vitest.unit.config.ts
 ├── tsconfig.json
 └── tsconfig.test.json
 ```
 
-## 14. Orden recomendado para construir los módulos
+## 15. Orden recomendado para construir los módulos
 
 1. **Base HTTP + Auth de administrador** — este módulo (SPEC 03).
 2. **`configuracion`** — radio de búsqueda, teléfono y nombre de empresa (SPEC 04).
@@ -735,25 +987,30 @@ backend/
 
 Cada módulo se implementa contra su spec en `specs/` y se prueba antes de pasar al siguiente.
 
-## 15. Cómo conectará n8n con esta API
+## 16. Cómo conectará n8n con esta API
 
 n8n no tendrá acceso directo a la base de datos. Llamará a endpoints REST con el header
 `X-N8N-Token` igual al secreto del `.env`, por ejemplo:
 
 ```
 POST /api/pasajeros/identificar
+PATCH /api/pasajeros/:id/aceptar-aviso
 POST /api/solicitudes            → crea una solicitud y dispara el motor de asignación
 GET  /api/solicitudes/:id/candidatos
 POST /api/solicitudes/:id/seleccionar-conductor
+GET  /api/solicitudes/:id        → polling ~5s para enterarse de los cambios de estado
+POST /api/solicitudes/:id/sin-conductor
 GET  /api/tarifas
 ```
+
+`POST /:id/responder` y `POST /:id/finalizar` son del conductor (app) y no los invoca n8n.
 
 El diseño exacto de endpoints se define módulo por módulo en cada spec.
 
 ## Siguientes pasos
 
-- Verificar los criterios de aceptación de `specs/09-motor-asignacion.md` y, si pasan, marcarla
+- Verificar los criterios de aceptación de `specs/10-solicitudes.md` y, si pasan, marcarla
   como **Implementado** antes de fusionar la rama.
 - Crear el administrador con `npm run admin:create` antes de probar login y PUT de configuración.
-- Continuar con el módulo `solicitudes` (módulo 7 del roadmap): ciclo de vida completo de la
-  solicitud, que reutilizará `obtenerCandidatos` por servicio interno sin exponer admin.
+- Continuar con el módulo `tarifario` + `dashboard` (módulo 8 del roadmap), que reutilizará el
+  índice `@@index([estado, expiraEn])` y la tabla de rechazos para sus vistas.
