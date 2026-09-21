@@ -6,6 +6,7 @@ import { configuracionRouter } from "./modules/configuracion/configuracion.route
 import { conductoresRouter } from "./modules/conductores/conductores.router";
 import { motorAsignacionRouter } from "./modules/motor-asignacion/motor-asignacion.router";
 import { pasajerosRouter } from "./modules/pasajeros/pasajeros.router";
+import { solicitudesRouter } from "./modules/solicitudes/solicitudes.router";
 import { ubicacionesRouter } from "./modules/ubicaciones/ubicaciones.router";
 
 const app = express();
@@ -23,6 +24,7 @@ app.use("/api/conductores", conductoresRouter);
 app.use("/api/conductores", ubicacionesRouter);
 app.use("/api/pasajeros", pasajerosRouter);
 app.use("/api/solicitudes", motorAsignacionRouter);
+app.use("/api/solicitudes", solicitudesRouter);
 
 app.use(notFound);
 app.use(errorHandler);

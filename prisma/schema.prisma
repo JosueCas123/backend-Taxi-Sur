@@ -83,10 +83,11 @@ model Conductor {
   creadoEn              DateTime               @default(now()) @map("creado_en")
   eliminadoEn           DateTime?              @map("eliminado_en")
 
-  usuario               Usuario                @relation(fields: [usuarioId], references: [id])
+  usuario               Usuario                     @relation(fields: [usuarioId], references: [id])
   vehiculos             Vehiculo[]
   ubicaciones           UbicacionConductor[]
   solicitudesAsignadas  Solicitud[]
+  solicitudesRechazadas SolicitudConductorRechazado[]
 
   @@map("conductores")
 }
@@ -173,10 +174,34 @@ model Solicitud {
   creadoEn             DateTime         @default(now()) @map("creado_en")
   eliminadoEn          DateTime?        @map("eliminado_en")
 
-  pasajero            Pasajero   @relation(fields: [pasajeroId], references: [id])
-  conductorAsignado   Conductor? @relation(fields: [conductorAsignadoId], references: [id])
+  pasajero             Pasajero                    @relation(fields: [pasajeroId], references: [id])
+  conductorAsignado    Conductor?                  @relation(fields: [conductorAsignadoId], references: [id])
+  conductoresRechazados SolicitudConductorRechazado[]
 
+  @@index([estado, expiraEn])
   @@map("solicitudes")
+}
+
+// -----------------------------------------------------------------------
+// SOLICITUDES_CONDUCTORES_RECHAZADOS — exclusiones Regla 7/8 (trazabilidad)
+// -----------------------------------------------------------------------
+enum MotivoExclusionSolicitud {
+  rechazo
+  expiracion
+}
+
+model SolicitudConductorRechazado {
+  id           String                    @id @default(uuid())
+  solicitudId  String                    @map("solicitud_id")
+  conductorId  String                    @map("conductor_id")
+  motivo       MotivoExclusionSolicitud
+  creadoEn     DateTime                  @default(now()) @map("creado_en")
+
+  solicitud    Solicitud                 @relation(fields: [solicitudId], references: [id])
+  conductor    Conductor                 @relation(fields: [conductorId], references: [id])
+
+  @@unique([solicitudId, conductorId])
+  @@map("solicitudes_conductores_rechazados")
 }
 
 // -----------------------------------------------------------------------

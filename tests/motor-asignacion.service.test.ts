@@ -11,12 +11,14 @@ vi.mock("../src/config/prisma", () => {
   const solicitud = { findFirst: vi.fn() };
   const configuracion = { findFirst: vi.fn() };
   const conductor = { findMany: vi.fn() };
-  return { prisma: { solicitud, configuracion, conductor } };
+  const solicitudConductorRechazado = { findMany: vi.fn() };
+  return { prisma: { solicitud, configuracion, conductor, solicitudConductorRechazado } };
 });
 
 const solicitudFindFirst = vi.mocked(prisma.solicitud.findFirst);
 const configuracionFindFirst = vi.mocked(prisma.configuracion.findFirst);
 const conductorFindMany = vi.mocked(prisma.conductor.findMany);
+const rechazadosFindMany = vi.mocked(prisma.solicitudConductorRechazado.findMany);
 
 const solicitudId = "d9428888-122b-4e1f-b85c-61cd3cbb3210";
 const ahora = new Date("2026-09-15T14:05:00.000Z");
@@ -95,6 +97,7 @@ beforeEach(() => {
   solicitudFindFirst.mockResolvedValue(puntoRecogida);
   configuracionFindFirst.mockResolvedValue({ radioMaximoBusquedaKm: 5 });
   conductorFindMany.mockResolvedValue([]);
+  rechazadosFindMany.mockResolvedValue([]);
 });
 
 afterEach(() => { vi.useRealTimers(); });
@@ -233,6 +236,115 @@ describe("obtenerCandidatos: filtros de elegibilidad (Regla 2)", () => {
     const error = new Error("Conductors failure");
     conductorFindMany.mockRejectedValueOnce(error);
     await expect(obtenerCandidatos(solicitudId, new Date())).rejects.toBe(error);
+  });
+});
+
+describe("obtenerCandidatos: exclusion por lista optativa (excluirIds)", () => {
+  it("sin lista de exclusion consulta sin filtro de id (comportamiento de SPEC 09)", async () => {
+    await obtenerCandidatos(solicitudId, new Date());
+    expect(conductorFindMany).toHaveBeenCalledWith(consultaConductores);
+  });
+
+  it("con lista vacia se comporta igual que sin lista", async () => {
+    await obtenerCandidatos(solicitudId, new Date(), []);
+    expect(conductorFindMany).toHaveBeenCalledWith(consultaConductores);
+  });
+
+  it("agrega notIn con los ids excluidos cuando la lista no esta vacia", async () => {
+    const excluidos = ["11111111-2222-4333-8444-555555555555", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"];
+    conductorFindMany.mockResolvedValueOnce([]);
+    await obtenerCandidatos(solicitudId, new Date(), excluidos);
+    expect(conductorFindMany).toHaveBeenCalledWith({
+      ...consultaConductores,
+      where: { ...consultaConductores.where, id: { notIn: excluidos } },
+    });
+  });
+
+  it("no devuelve a un conductor excluido aunque sea el mas cercano", async () => {
+    const excluido = conductor({
+      id: "11111111-2222-4333-8444-555555555555",
+      nombreCompleto: "Cercano",
+      ubicaciones: [ubicacionEn(-17.7833, -63.1821)],
+    });
+    const otro = conductor({
+      id: "22222222-3333-4444-8555-666666666666",
+      nombreCompleto: "Otro",
+      ubicaciones: [ubicacionEn(-17.78, -63.18)],
+    });
+    const excluir = [excluido.id];
+    // El where con notIn filtra en la base; el mock responde solo los restantes.
+    conductorFindMany.mockResolvedValueOnce([otro]);
+    const result = await obtenerCandidatos(solicitudId, new Date(), excluir);
+    expect(conductorFindMany).toHaveBeenCalledWith({
+      ...consultaConductores,
+      where: { ...consultaConductores.where, id: { notIn: excluir } },
+    });
+    expect(result).toEqual({
+      ok: true,
+      candidatos: [esperadoCandidato("22222222-3333-4444-8555-666666666666", "Otro", 0.43)],
+    });
+  });
+
+  it("excluye a varios conductores a la vez", async () => {
+    const a = conductor({
+      id: "11111111-2222-4333-8444-555555555555",
+      nombreCompleto: "A",
+      ubicaciones: [ubicacionEn(-17.78, -63.18)],
+    });
+    const b = conductor({
+      id: "22222222-3333-4444-8555-666666666666",
+      nombreCompleto: "B",
+      ubicaciones: [ubicacionEn(-17.79, -63.19)],
+    });
+    const c = conductor({
+      id: "33333333-4444-4555-8666-777777777777",
+      nombreCompleto: "C",
+      ubicaciones: [ubicacionEn(-17.81, -63.21)],
+    });
+    const excluir = [a.id, b.id];
+    // El where con notIn filtra en la base; el mock responde solo el resto.
+    conductorFindMany.mockResolvedValueOnce([c]);
+    const result = await obtenerCandidatos(solicitudId, new Date(), excluir);
+    expect(conductorFindMany).toHaveBeenCalledWith({
+      ...consultaConductores,
+      where: { ...consultaConductores.where, id: { notIn: excluir } },
+    });
+    expect(result).toEqual({
+      ok: true,
+      candidatos: [esperadoCandidato("33333333-4444-4555-8666-777777777777", "C",
+        Math.round(distanciaKm(-17.7833, -63.1821, -17.81, -63.21) * 100) / 100)],
+    });
+  });
+
+  it("excluye sin lista los conductores con rechazo/expiracion registrado (Regla 7/8)", async () => {
+    const rechazadoId = "55555555-6666-4777-8888-999999999999";
+    rechazadosFindMany.mockResolvedValueOnce([{ conductorId: rechazadoId }]);
+    const otro = conductor({ id: "66666666-7777-4888-8999-aaaaaaaaaaaa", nombreCompleto: "Otro" });
+    conductorFindMany.mockResolvedValueOnce([otro]);
+    const result = await obtenerCandidatos(solicitudId, new Date());
+    expect(rechazadosFindMany).toHaveBeenCalledWith({
+      where: { solicitudId }, select: { conductorId: true },
+    });
+    expect(conductorFindMany).toHaveBeenCalledWith({
+      ...consultaConductores,
+      where: { ...consultaConductores.where, id: { notIn: [rechazadoId] } },
+    });
+    expect(result).toEqual({
+      ok: true,
+      candidatos: [esperadoCandidato("66666666-7777-4888-8999-aaaaaaaaaaaa", "Otro", 0.43)],
+    });
+  });
+
+  it("combina la tabla de rechazos con la lista explicita sin duplicar", async () => {
+    const rechazadoId = "55555555-6666-4777-8888-999999999999";
+    const explicitoId = "66666666-7777-4888-8999-aaaaaaaaaaaa";
+    rechazadosFindMany.mockResolvedValueOnce([{ conductorId: rechazadoId }, { conductorId: explicitoId }]);
+    conductorFindMany.mockResolvedValueOnce([]);
+    await obtenerCandidatos(solicitudId, new Date(), [explicitoId]);
+    expect(conductorFindMany).toHaveBeenCalledWith({
+      ...consultaConductores,
+      where: { ...consultaConductores.where, id: { notIn: [explicitoId, rechazadoId] } },
+    });
   });
 });
 

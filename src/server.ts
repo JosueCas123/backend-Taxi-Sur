@@ -42,6 +42,14 @@ async function start() {
   try {
     // Inicializa el pool sin consultar la base: health es liveness, no readiness.
     await prisma.$connect();
+    // Regla 8: al arrancar se expiran las solicitudes vencidas durante la caida
+    // y se reprograman los timeouts de las pendientes (Regla 8). Los timeouts
+    // quedan .unref() para no bloquear el cierre del proceso.
+    const { barridoInicial } = await import("./modules/solicitudes/solicitudes.service");
+    barridoInicial(new Date())
+      .catch((error: unknown) => {
+        console.error("Fallo el barrido inicial de solicitudes vencidas.", error);
+      });
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
     server.on("error", () => {
