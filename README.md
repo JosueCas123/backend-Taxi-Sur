@@ -916,7 +916,162 @@ anterior son DTOs estrictos (Zod `.strict()`): campos desconocidos quedan descar
 El stub `notificarPasajero(pasajeroId, {solicitudId, conductorNombre, placa})` (SPEC 06, módulo 3)
 no persiste ni hace fallar el endpoint; las notificaciones reales (push/WhatsApp) quedan post-MVP.
 
-## 13. Pruebas
+## 13. Tarifario (SPEC 11)
+
+El tarifario oficial es la única fuente de tarifas: la IA (n8n) **solo consulta**; nunca inventa ni
+calcula importes. La persistencia conserva `tarifas` sin migraciones nuevas: cada fila tiene una
+`descripcion`, un `monto` `Decimal(10,2)` y una fecha `vigenciaDesde` (`@db.Date`) almacenada a la
+medianoche UTC. La **fecha de visualización** se decide en `America/La_Paz` (UTC-4): una tarifa se
+muestra desde su `vigenciaDesde` **inclusive** hasta el inicio del día siguiente del calendario de
+La Paz. `POST` acepta fechas **pasadas, de hoy y futuras**; `PATCH` edita solo `descripcion` y/o
+`monto`, conservando `id` y `vigenciaDesde` inmutables.
+
+### Permisos
+
+| Endpoint | Credencial aceptada | Consecuencias |
+|---|---|---|
+| `GET /api/tarifas` | n8n **o** admin (`requireN8nOrAdmin`) | Conductor (JWT): `403`. Sin credencial: `401`. |
+| `POST /api/tarifas` | Solo admin (`requireAdmin`) | n8n: `401`. Conductor: `403`. |
+| `PATCH /api/tarifas/:id` | Solo admin (`requireAdmin`) | n8n: `401`. Conductor: `403`. |
+
+### GET /api/tarifas
+
+```bash
+curl http://localhost:3000/api/tarifas \
+  -H "X-N8N-Token: <N8N_API_TOKEN>"
+```
+
+- `200` con un array de `TarifaDto` con orden estable (`descripcion` asc, `id` asc); vacío devuelve `200 []`.
+- Incluye todas las filas **no eliminadas** con `vigenciaDesde` igual o anterior al día de hoy de
+  La Paz; excluye las futuras y las eliminadas lógicamente.
+- Una query no vacía (`?pagina=1`) responde `400 VALIDATION_ERROR` sin consultar el servicio.
+
+### POST /api/tarifas — crear (admin)
+
+```bash
+curl -X POST http://localhost:3000/api/tarifas \
+  -H "Authorization: Bearer <JWT-de-admin>" \
+  -H "Content-Type: application/json" \
+  -d '{"descripcion":"Referencia centro a terminal","monto":"15.00","vigenciaDesde":"2026-09-21"}'
+```
+
+- Cuerpo estricto: `descripcion` recortada 1–255; `monto` string con dos decimales entre `0.01` y
+  `99999999.99` (sin coerción numérica ni redondeo); `vigenciaDesde` fecha ISO `YYYY-MM-DD`.
+- `201` con el `TarifaDto`. Los montos se persisten como `Decimal(10,2)` **exactos** sin pérdida.
+- Se rechazan `0.00`, `100000000.00`, números JSON, precisión extra y campos desconocidos (`400`).
+
+### PATCH /api/tarifas/:id — editar (admin)
+
+```bash
+curl -X PATCH http://localhost:3000/api/tarifas/<id> \
+  -H "Authorization: Bearer <JWT-de-admin>" \
+  -H "Content-Type: application/json" \
+  -d '{"monto":"18.45"}'
+```
+
+- Actualización parcial de `descripcion` y/o `monto` (al menos uno presente, con las reglas del
+  POST). `vigenciaDesde` **no** es editable: enviarla, aunque sea con el mismo valor, responde `400`
+  (fecha inmutable, P04). No se crea otra fila ni se restringe la edición a filas futuras; una
+  tarifa ya vigente no produce `409` por su fecha.
+- `200` con el `TarifaDto` actualizado. `404 NOT_FOUND` para UUID inválido, tarifa inexistente o
+  eliminada. `400` para cuerpo vacío, campo desconocido o montos inválidos, sin escribir.
+
+### DTO y semántica del monto
+
+```json
+{ "id": "UUID", "descripcion": "Referencia centro a terminal", "monto": "15.00", "vigenciaDesde": "2026-09-21" }
+```
+
+`monto` es un **string** con dos decimales en **Bs aproximados**: es el valor de referencia para la
+IA y el dashboard, **no un precio final garantizado**. La API no calcula tarifas por distancia, no
+suma recargos ni convierte moneda; expone el `monto` registrado sin modificación.
+
+Códigos: `400 VALIDATION_ERROR`, `401 UNAUTHORIZED`, `403 FORBIDDEN`, `404 NOT_FOUND`,
+`500 INTERNAL_ERROR`. Ningún error expone SQL, stack, URLs ni secretos.
+
+## 14. Dashboard (SPEC 11)
+
+Vistas administrativas con **mínimos datos** por fila y **sin paginación ni truncamiento** (los
+listados devuelven todo el universo, aunque supere 25 registros). Las tres rutas son solo admin
+(`requireAdmin`) y comparten estas garantías (P09):
+
+- Responden `200` con `Cache-Control: no-store`.
+- Cada respuesta se lee dentro de una **única transacción real `RepeatableRead`** sobre
+  PostgreSQL: todas las consultas y relaciones de esa respuesta forman una **instantánea
+  consistente**. La consistencia es **por respuesta**: no hay garantía de igualdad entre endpoints
+  consultados en momentos distintos.
+- Ningún GET escribe ni dispara transiciones de solicitud, jornada, disponibilidad o ubicación.
+- Sin credencial: `401`; JWT de conductor (o solo n8n): `403`; query no vacía: `400`.
+
+### GET /api/dashboard/conductores-mapa
+
+```bash
+curl http://localhost:3000/api/dashboard/conductores-mapa \
+  -H "Authorization: Bearer <JWT-de-admin>"
+```
+
+- `200` con un array de `MapaConductorDto` con **todos** los conductores no eliminados, en cualquier
+  estado de aprobación, jornada y disponibilidad. P06: el conductor permanece aunque su `usuario`
+  esté eliminado; un conductor eliminado queda fuera. Orden `nombreCompleto` asc, `id` asc.
+- El DTO separa los tres estados (`estado`, `estadoJornada`, `estadoDisponibilidad`) sin estado
+  visual implícito, y expone:
+  - `vehiculo`: el activo más reciente o `null` si no hay.
+  - `ubicacion`: la última posición **no eliminada** vigente (`esTemporalmenteValida`, 5 min) o
+    `null` si falta, es inválida o caducó; nunca se recupera una posición anterior para sustituirla.
+  - `ultimaUbicacionRegistradaEn`: la última posición conservada aunque ya no sea vigente (`null`
+    sin registros).
+
+### GET /api/dashboard/solicitudes-activas
+
+```bash
+curl http://localhost:3000/api/dashboard/solicitudes-activas \
+  -H "Authorization: Bearer <JWT-de-admin>"
+```
+
+- `200` con un array de `SolicitudActivaDto`: solicitudes **no eliminadas** en los seis estados
+  activos de SPEC 10 (`creada`, `buscando`, `conductor_seleccionado`, `esperando_respuesta`,
+  `aceptada`, `en_servicio`); excluye los cuatro terminales (`finalizada`, `rechazada`, `expirada`,
+  `sin_conductor`). Orden `creadoEn` desc, `id` desc.
+- P06: si el `pasajero` o el `conductorAsignado` está eliminado, la solicitud permanece y su resumen
+  en el DTO es `null`. `destino` y `expiraEn` pueden ser `null`; fechas ISO 8601 en UTC.
+
+### GET /api/dashboard/indicadores
+
+```bash
+curl http://localhost:3000/api/dashboard/indicadores \
+  -H "Authorization: Bearer <JWT-de-admin>"
+```
+
+- `200` con cuatro conteos calculados dentro de la misma instantánea `RepeatableRead`:
+
+```json
+{
+  "conductoresDisponibles": 12,
+  "conductoresEnServicio": 3,
+  "solicitudesActivas": 7,
+  "solicitudesCompletadasHoy": 9
+}
+```
+
+Definiciones (todas sobre filas no eliminadas):
+
+- `conductoresDisponibles` / `conductoresEnServicio`: conductores por **disponibilidad registrada**
+  (`disponible` / `en_servicio`), no por elegibilidad: GPS, jornada, vehículo, aprobación ni el
+  estado del usuario relacionado no descartan (P06). `no_disponible` y `solicitud_pendiente` no
+  suman.
+- `solicitudesActivas`: los seis estados activos de SPEC 10.
+- `solicitudesCompletadasHoy`: estado `finalizada` con `finalizadaEn` dentro del día de negocio de
+  `America/La_Paz`, intervalo `[inicioDelDia, inicioDelDiaSiguiente)` (desde las 04:00:00.000Z; p.
+  ej. para el 2026-09-21, de `2026-09-21T04:00:00.000Z` inclusive a `2026-09-22T04:00:00.000Z`
+  exclusive). `finalizadaEn` nula u otro estado con fecha no suman.
+
+### DTOs y códigos
+
+DTOs estrictos (Zod `.strict()`): `MapaConductorDto`, `SolicitudActivaDto` e `IndicadoresDto`
+exponen solo los campos mínimos pactados. Códigos: `400 VALIDATION_ERROR`, `401 UNAUTHORIZED`,
+`403 FORBIDDEN`, `500 INTERNAL_ERROR`; los errores nunca exponen SQL, stack, URLs ni secretos.
+
+## 15. Pruebas
 
 ```bash
 npm test            # Vitest + Supertest + integración con PostgreSQL de pruebas
@@ -932,11 +1087,12 @@ la de desarrollo:
   rechaza el mismo proyecto, alias o referencias ambiguas.
 - Las migraciones existentes se aplican **solo** al destino de pruebas validado.
 - Cada suite crea y limpia únicamente sus propios registros (`spec03-<UUID>`, `spec04-<UUID>`,
-  `spec05-<UUID>`, `spec07-<UUID>`, `spec08-<UUID>`, `spec09-<UUID>`, y `sp10-<UUID>` en
-  `tests/solicitudes.test.ts`); no se hace limpieza global. No se escribe jamás en la base de
+  `spec05-<UUID>`, `spec07-<UUID>`, `spec08-<UUID>`, `spec09-<UUID>`, `sp10-<UUID>` en
+  `tests/solicitudes.test.ts`, y `sp11-<UUID>` en `tests/tarifario.test.ts` y
+  `tests/dashboard.test.ts`); no se hace limpieza global. No se escribe jamás en la base de
   desarrollo.
 
-## 14. Estructura del código fuente
+## 16. Estructura del código fuente
 
 ```
 backend/
@@ -958,7 +1114,9 @@ backend/
 │   │   ├── pasajeros/     # pasajeros.schema / .service / .controller / .router
 │   │   ├── ubicaciones/   # ubicaciones.schema / .service / .controller / .router
 │   │   ├── motor-asignacion/ # motor-asignacion.schema / .service / .controller / .router
-│   │   └── solicitudes/   # solicitudes.schema / .service / .controller / .router / notificaciones
+│   │   ├── solicitudes/   # solicitudes.schema / .service / .controller / .router / notificaciones
+│   │   ├── tarifario/     # tarifario.schema / .service / .controller / .router
+│   │   └── dashboard/     # dashboard.schema / .service / .controller / .router
 │   ├── scripts/
 │   │   └── create-admin.ts
 │   ├── app.ts             # Express: middlewares globales y rutas (no abre puerto)
@@ -966,14 +1124,14 @@ backend/
 ├── tests/
 │   ├── setup.ts           # verificación read-only e isolación del destino de pruebas
 │   ├── database-safety.ts # validación de destinos y proyectos Supabase
-│   └── *.test.ts          # health, auth, create-admin, middlewares, database, configuracion, conductores, pasajeros, ubicaciones, motor-asignacion, solicitudes
+│   └── *.test.ts          # health, auth, create-admin, middlewares, database, configuracion, conductores, pasajeros, ubicaciones, motor-asignacion, solicitudes, tarifario, dashboard
 ├── vitest.config.ts
 ├── vitest.unit.config.ts
 ├── tsconfig.json
 └── tsconfig.test.json
 ```
 
-## 15. Orden recomendado para construir los módulos
+## 17. Orden recomendado para construir los módulos
 
 1. **Base HTTP + Auth de administrador** — este módulo (SPEC 03).
 2. **`configuracion`** — radio de búsqueda, teléfono y nombre de empresa (SPEC 04).
@@ -987,7 +1145,7 @@ backend/
 
 Cada módulo se implementa contra su spec en `specs/` y se prueba antes de pasar al siguiente.
 
-## 16. Cómo conectará n8n con esta API
+## 18. Cómo conectará n8n con esta API
 
 n8n no tendrá acceso directo a la base de datos. Llamará a endpoints REST con el header
 `X-N8N-Token` igual al secreto del `.env`, por ejemplo:
@@ -1009,8 +1167,8 @@ El diseño exacto de endpoints se define módulo por módulo en cada spec.
 
 ## Siguientes pasos
 
-- Verificar los criterios de aceptación de `specs/10-solicitudes.md` y, si pasan, marcarla
+- Verificar los criterios de aceptación de `specs/11-tarifario-dashboard.md` y, si pasan, marcarla
   como **Implementado** antes de fusionar la rama.
 - Crear el administrador con `npm run admin:create` antes de probar login y PUT de configuración.
-- Continuar con el módulo `tarifario` + `dashboard` (módulo 8 del roadmap), que reutilizará el
-  índice `@@index([estado, expiraEn])` y la tabla de rechazos para sus vistas.
+- Los criterios de `specs/10-solicitudes.md` ya verificados quedan documentados en
+  `tests/solicitudes.test.ts`.

@@ -4,9 +4,11 @@ import { errorHandler, notFound } from "./middlewares/error-handler";
 import { authRouter } from "./modules/auth/auth.router";
 import { configuracionRouter } from "./modules/configuracion/configuracion.router";
 import { conductoresRouter } from "./modules/conductores/conductores.router";
+import { dashboardRouter } from "./modules/dashboard/dashboard.router";
 import { motorAsignacionRouter } from "./modules/motor-asignacion/motor-asignacion.router";
 import { pasajerosRouter } from "./modules/pasajeros/pasajeros.router";
 import { solicitudesRouter } from "./modules/solicitudes/solicitudes.router";
+import { tarifarioRouter } from "./modules/tarifario/tarifario.router";
 import { ubicacionesRouter } from "./modules/ubicaciones/ubicaciones.router";
 
 const app = express();
@@ -25,6 +27,8 @@ app.use("/api/conductores", ubicacionesRouter);
 app.use("/api/pasajeros", pasajerosRouter);
 app.use("/api/solicitudes", motorAsignacionRouter);
 app.use("/api/solicitudes", solicitudesRouter);
+app.use("/api/tarifas", tarifarioRouter);
+app.use("/api/dashboard", dashboardRouter);
 
 app.use(notFound);
 app.use(errorHandler);

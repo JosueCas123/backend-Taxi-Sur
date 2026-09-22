@@ -13,7 +13,8 @@ export const VENTANA_RESPUESTA_MS = 60_000;
 
 // Regla 1: estados no terminales que bloquean una nueva solicitud del pasajero.
 // Terminales: finalizada, rechazada, expirada, sin_conductor.
-const ESTADOS_NO_TERMINALES: EstadoSolicitud[] = [
+// Exportada para que el dashboard reutilice la misma definicion sin duplicarla.
+export const ESTADOS_NO_TERMINALES: EstadoSolicitud[] = [
   "creada", "buscando", "conductor_seleccionado", "esperando_respuesta",
   "aceptada", "en_servicio",
 ];
